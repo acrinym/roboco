@@ -441,7 +441,7 @@ services:
   # MinIO - Object storage for rendered videos (NAS default-on; registry OFF)
   # ==========================================================================
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: roboco-minio
     restart: unless-stopped
     # data-only network — keeps MinIO off the agent mesh; the multi-homed
@@ -468,7 +468,7 @@ services:
   # minio healthy, creates the bucket idempotently, then exits. `|| true`
   # covers re-runs (bucket already exists).
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     container_name: roboco-minio-init
     depends_on:
       minio:
