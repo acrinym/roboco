@@ -3128,7 +3128,7 @@ class Choreographer:
                     context_briefing=ctx.briefing,
                 ),
             )
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
         # Server-side milestone progress so the panel always
         # records the QA handoff regardless of agent's progress() habits.
@@ -3138,7 +3138,10 @@ class Choreographer:
             "submitted for QA review",
             percentage=90,
         )
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _i_am_done_resume_from_verifying(self, ctx: _IAmDoneContext) -> Envelope:
         """Recovery path: task is already in `verifying` owned by caller.
@@ -3163,9 +3166,12 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _i_am_done_pre_gate_dispatch(
         self, ctx: _IAmDoneContext, t: Any, agent_id: UUID
@@ -3293,12 +3299,15 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
         await self._touch(ctx.task_id)
         await self._record_milestone_progress(
             ctx.task_id, ctx.agent_id, "submitted for QA review", percentage=90
         )
-        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+        if notify_warning:
+            env.warning = notify_warning
+        return env
 
     async def _open_finding_ids(self, task_id: UUID) -> tuple[str, ...]:
         """8-char ids of the task's still-OPEN revision-ledger findings.
@@ -4050,24 +4059,63 @@ class Choreographer:
         if reviewer is not None:
             await self.task.reassign(task_id, reviewer.id)
 
-    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
+    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> str | None:
         """Reassign + A2A-notify the QA agent for this task's team.
 
         ``submit_qa`` clears ``assigned_to`` to None. We then explicitly
         reassign to the QA agent so the orchestrator's per-agent task
         polling spawns QA (not the dev again) for the next stage.
+
+        The submit-qa transition is already committed by the time this
+        runs, so a raise here (``A2AService.send`` is NOT best-effort —
+        it raises on policy denial, missing-agent lookup, participant
+        validation, and transient DB errors) must not escape and blow up
+        the verb path. Degrades to a warning string instead, mirroring
+        ``_pass_review_documenter_handoff`` (qa.py) and the ``pr_fail``
+        loop-closer (pr_gate.py) — the two existing precedents for this
+        exact shape.
         """
         qa_agent = await self.task.qa_agent_for_team(t.team)
-        if qa_agent is not None:
-            await self.task.reassign(task_id, qa_agent.id)
-            skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
-            await self.a2a.send(
-                from_agent=agent_id,
-                to_agent=qa_agent.id,
-                skill=skill,
-                task_id=task_id,
-                body=f"Ready for review. PR: {t.pr_url}",
+        if qa_agent is None:
+            return None
+        try:
+            # Savepoint: reassign()'s flush would otherwise poison the
+            # shared session on a mid-flush failure — the response commit
+            # (DbCommitMiddleware) reuses it right after this returns.
+            async with self.task.session.begin_nested():
+                await self.task.reassign(task_id, qa_agent.id)
+                skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
+                await self.a2a.send(
+                    from_agent=agent_id,
+                    to_agent=qa_agent.id,
+                    skill=skill,
+                    task_id=task_id,
+                    body=f"Ready for review. PR: {t.pr_url}",
+                )
+        except Exception as exc:
+            # The savepoint rollback on ANY exception here — not just a DB
+            # error, e.g. a2a.send failing — fully expires every attribute
+            # of `t` (the same identity-map object reassign() mutated
+            # inside the block). The caller reads t.status / with_introspection(t)
+            # building the envelope right after this returns, so a refresh
+            # failure here means the DB is genuinely broken; let it raise —
+            # that 500 is honest, unlike silently returning a warning off a
+            # task object that will itself blow up on read.
+            await self.task.session.refresh(t)
+            logger.warning(
+                "notify_qa side-effect failed - transition committed, "
+                "handoff did not fire",
+                task_id=str(task_id),
+                recipient=str(qa_agent.id),
+                error_type=type(exc).__name__,
+                error=repr(exc),
             )
+            return (
+                f"submit-qa transition committed but the QA handoff to "
+                f"{qa_agent.id} failed ({type(exc).__name__}: {exc!r}). "
+                f"Re-issue the notification via dm."
+            )
+        return None
 
     def _resolve_skill(self, target_agent: Any, preference: list[str]) -> str:
         """Pick first skill in preference list that target_agent has.
@@ -9330,23 +9378,75 @@ class Choreographer:
             )
         # Close the signal loop — the reject reason must reach whoever owns
         # the revision (mirrors fail_review / the pr_fail loop-closer).
-        if t.assigned_to is not None and t.assigned_to != pm_agent_id:
-            await self.a2a.send(
-                from_agent=pm_agent_id,
-                to_agent=t.assigned_to,
-                skill="code_review",
-                task_id=task_id,
-                body=f"PM merge review needs changes.\n{summary}",
-            )
+        warning = await self._notify_request_changes_owner(
+            pm_agent_id, task_id, t, summary
+        )
         env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
-        if hint := findings_lib.findings_count_hint(validated):
+        hint = findings_lib.findings_count_hint(validated)
+        if warning:
+            env.warning = f"{warning} {hint}" if hint else warning
+        elif hint:
             env.warning = hint
         return env
+
+    async def _notify_request_changes_owner(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, summary: str
+    ) -> str | None:
+        """Best-effort a2a the reject rendering to the revision owner.
+
+        Returns a warning string when the notification failed (the
+        needs_revision transition plus the ledger rows and the pm_notes note
+        are already committed at this point), else None. Pulled out of
+        ``request_changes`` to keep it under the cyclomatic bound. A2AService
+        .send raises on policy denial, unknown recipients, and transient DB
+        errors — a failure here must degrade to a warning in the unchanged
+        success envelope, never reject the verb or roll the bounce back.
+        """
+        if t.assigned_to is None or t.assigned_to == pm_agent_id:
+            return None
+        try:
+            # Savepoint: a2a.send's flush would otherwise poison the shared
+            # session on a mid-flush failure — the response commit
+            # (DbCommitMiddleware) reuses it right after this returns, and
+            # it must still carry the needs_revision transition, the
+            # findings-ledger rows, and the pm_notes note already written
+            # earlier this request.
+            async with self.task.session.begin_nested():
+                await self.a2a.send(
+                    from_agent=pm_agent_id,
+                    to_agent=t.assigned_to,
+                    skill="code_review",
+                    task_id=task_id,
+                    body=f"PM merge review needs changes.\n{summary}",
+                )
+        except Exception as exc:
+            # The savepoint rollback here can also expire attributes on `t`
+            # (mutated earlier this request by request_changes' own
+            # transition) — refresh before the caller reads t.status /
+            # with_introspection(t) building the envelope right after this
+            # returns. A refresh failure means the DB is genuinely broken;
+            # let it raise rather than silently return a warning off a task
+            # object that will itself blow up on read.
+            await self.task.session.refresh(t)
+            logger.warning(
+                "request_changes a2a to revision owner failed — "
+                "transition committed, notification did not fire",
+                task_id=str(task_id),
+                recipient=str(t.assigned_to),
+                error=repr(exc),
+            )
+            return (
+                f"request_changes transition committed but the a2a "
+                f"notification to the revision owner ({t.assigned_to}) "
+                f"failed ({exc!r}). The reject reason is on the task's "
+                f"findings ledger — re-issue it via dm."
+            )
+        return None
 
     async def _request_changes_spec_gate(
         self,
