@@ -10,7 +10,7 @@ Contributions require a signed **Contributor License Agreement** (`CLA.md`), aut
 
 ## Project Overview
 
-**RoboCo** is an AI Agentic Company - a virtual organization of 25 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
+**RoboCo** is an AI Agentic Company - a virtual organization of 26 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
 
 ```
 CEO (Renzo - Human)
@@ -25,6 +25,7 @@ CEO (Renzo - Human)
          +-- Auditor (silent observer, reports to CEO)
               |
               +-- Main PM (coordinates all cells)
+              (a second floating cell PR reviewer, cell-pr-reviewer-2, backs the four cell gates)
                    |
                    +-- Backend Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
                    +-- Frontend Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
