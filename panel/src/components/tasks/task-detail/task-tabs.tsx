@@ -155,7 +155,7 @@ export function TaskTabs({ task }: TaskTabsProps) {
 
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange} className="mt-6">
-      <TabsList className="grid w-full grid-cols-9 lg:w-auto lg:inline-grid">
+      <TabsList className="grid w-full grid-cols-10 lg:w-auto lg:inline-grid">
         {tabs.map((tab) => (
           <Tooltip key={tab.value}>
             <TooltipTrigger asChild>

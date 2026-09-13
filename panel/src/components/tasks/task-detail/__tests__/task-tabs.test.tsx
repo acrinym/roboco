@@ -98,7 +98,7 @@ describe("TaskTabs active-tab highlight", () => {
     const others = screen
       .getAllByRole("tab")
       .filter((t) => t !== overviewTrigger);
-    expect(others).toHaveLength(8);
+    expect(others).toHaveLength(9);
     for (const trigger of others) {
       expect(trigger).toHaveAttribute("data-state", "inactive");
     }
