@@ -108,6 +108,7 @@ export enum ModelProvider {
   GROK = "grok",
   GEMINI = "gemini",
   KIMI = "kimi",
+  OPENROUTER = "openrouter",
 }
 
 export enum AssignmentScope {
@@ -378,6 +379,45 @@ export interface SubstituteRequest {
 
 export interface TaskCountResponse {
   counts: Record<string, number>;
+}
+
+// ============================================================================
+// Per-task governance report (panel Governance tab)
+// ============================================================================
+
+// One stage in the task's quality-gate chain (conventions -> self-verification
+// -> QA -> PR-gate -> PM review -> CEO approval). Matches the backend
+// GateStageResponse schema (roboco/api/schemas/tasks.py). status is "passed",
+// "failed", "pending" (reached but not yet evaluated), or "not_reached" (the
+// task hasn't progressed far enough).
+export interface GovernanceGateStep {
+  gate: string;
+  status: string;
+  timestamp: string | null;
+  detail: string | null;
+}
+
+// Per-origin revision-finding counts — the same row shape the Findings tab
+// renders (TaskFindingsSummaryRow in lib/api/tasks); mirrored here so the
+// governance report stays a self-contained contract.
+export interface GovernanceFindingsSummaryRow {
+  origin: string;
+  open: number;
+  addressed: number;
+  verified: number;
+  waived: number;
+}
+
+// The per-task governance report. Matches the backend
+// TaskGovernanceReportResponse schema (roboco/api/schemas/tasks.py).
+export interface GovernanceReportResponse {
+  task_id: string;
+  task_status: string;
+  revision_count: number;
+  gate_chain: GovernanceGateStep[];
+  findings_summary: GovernanceFindingsSummaryRow[];
+  conventions_block_count: number;
+  conventions_warn_count: number;
 }
 
 export interface ModelConfig {
@@ -674,6 +714,22 @@ export interface CEOOverview {
   key_metrics: Record<string, unknown>;
   auditor_alerts: Record<string, unknown>;
   roadmap_progress: Record<string, unknown>;
+}
+
+// =============================================================================
+// PORTFOLIO (matching backend schemas/dashboard.py PortfolioProjectMetrics)
+// =============================================================================
+
+/** One per-project row of the CEO portfolio view - GET /dashboard/portfolio, most active first */
+export interface PortfolioCard {
+  project_id: string;
+  project_slug: string;
+  project_name: string;
+  active_task_count: number;
+  median_lead_time_hours: number | null;
+  rework_rate: number;
+  open_findings_count: number;
+  monthly_budget_burn_usd: number;
 }
 
 // =============================================================================
@@ -1061,6 +1117,15 @@ export interface EnvironmentRung {
   branch: string;
 }
 
+// One agent in a project's allowed-access list — the backend resolves the
+// stored agent UUIDs to slug/name for display (AllowedAgentSummary in
+// roboco/api/schemas/project.py).
+export interface AllowedAgentSummary {
+  id: string;
+  slug: string;
+  name: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -1077,6 +1142,14 @@ export interface Project {
   environments: EnvironmentRung[] | null;
   protected_branches: string[];
   assigned_cell: Team;
+  // Access restriction (backend slice 0e99f678): null/undefined allowed_agents
+  // = the whole assigned cell has access (today's default); a list = access
+  // restricted to only those agents. access_restricted spells out the
+  // None-vs-list distinction explicitly so a typed client never has to treat
+  // a null array as ambiguous. Optional on the wire: backends predating the
+  // restriction slice omit both fields.
+  access_restricted?: boolean;
+  allowed_agents?: AllowedAgentSummary[] | null;
   // Git authentication (token never exposed, only boolean indicator)
   has_git_token: boolean;
   is_active: boolean;

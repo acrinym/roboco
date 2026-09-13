@@ -43,11 +43,20 @@ _SONNET_OUTPUT = 15.00
 _SONNET_CACHE_READ = 0.30
 _SONNET_CACHE_WRITE = 0.75
 
-# Sonnet 5 — promotional pricing (33% off Sonnet 4.6, pay 67%) through 2026-08-31
+# Sonnet 5 — promotional pricing (33% off Sonnet 4.6, pay 67%) through 2026-09-13
 _SONNET5_INPUT = 2.01
 _SONNET5_OUTPUT = 10.05
 _SONNET5_CACHE_READ = 0.201
 _SONNET5_CACHE_WRITE = 0.5025
+
+# Sonnet 5 promo date gate — frozen window edges for the tests. The promo
+# tests pin the end to a far-future date (_PROMO_FAR_FUTURE_END) so the promo
+# branch stays active on any run date; the list-price tests pin it to a past
+# date (_PROMO_PAST_END) so the real date.today() always exceeds it and the
+# list branch is covered on any run date — neither side of the gate
+# date-bombs on the calendar again.
+_PROMO_FAR_FUTURE_END = date(2099, 12, 31)
+_PROMO_PAST_END = date(2026, 8, 30)
 
 _HAIKU_INPUT = 1.00
 _HAIKU_OUTPUT = 5.00
@@ -69,7 +78,7 @@ _CODEX_OUTPUT = 14.00
 _CODEX_CACHE_READ = 0.175
 _CODEX_CACHE_WRITE = 1.75
 
-# Z.ai GLM-5.2 — priced non-Anthropic (Ollama Cloud's `glm-5.2:cloud` tag,
+# Z.ai GLM-5.3 — priced non-Anthropic (Ollama Cloud's `glm-5.3:cloud` tag,
 # subscription-billed but attributed at the API-equivalent rate). Source:
 # https://docs.z.ai/guides/overview/pricing (fetched 2026-07-23).
 _GLM_INPUT = 1.40
@@ -213,29 +222,96 @@ class TestSonnetTier:
         assert abs(cost - _SONNET_INPUT) < _TOL
 
 
-class TestSonnet5PromoTier:
-    """claude-sonnet-5 promotional pricing — 33% off Sonnet 4.6 (through
-    2026-08-31). A dedicated table entry wins over the bare 'sonnet' fragment."""
+class TestSonnet5Tier:
+    """claude-sonnet-5 pricing — the promo (33% off Sonnet 4.6) ends
+    2026-09-13, so rates are date-gated: promo rates on/ before that date,
+    Sonnet-4.6 list rates after. Tests assert against ``p._sonnet5_prices()``
+    so they hold on either side of the boundary."""
+
+    @pytest.fixture(autouse=True)
+    def _promo_window_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Freeze the promo window open: the real window expired 2026-08-31,
+        so these promo-rate assertions must pin a far-future end to hold on
+        any run date instead of date-bombing once the calendar passes it."""
+        monkeypatch.setattr(p, "_SONNET5_PROMO_END", _PROMO_FAR_FUTURE_END)
 
     def test_input_only(self) -> None:
         cost = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=0)
-        assert abs(cost - _SONNET5_INPUT) < _TOL
+        assert abs(cost - p._sonnet5_prices()[0]) < _TOL
 
     def test_output_only(self) -> None:
         cost = calculate_cost("claude-sonnet-5", tokens_input=0, tokens_output=_M)
-        assert abs(cost - _SONNET5_OUTPUT) < _TOL
+        assert abs(cost - p._sonnet5_prices()[1]) < _TOL
 
     def test_cache_read_only(self) -> None:
         cost = calculate_cost(
             "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_read=_M
         )
-        assert abs(cost - _SONNET5_CACHE_READ) < _TOL
+        assert abs(cost - p._sonnet5_prices()[2]) < _TOL
 
     def test_cache_write_only(self) -> None:
         cost = calculate_cost(
             "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_write=_M
         )
-        assert abs(cost - _SONNET5_CACHE_WRITE) < _TOL
+        assert abs(cost - p._sonnet5_prices()[3]) < _TOL
+
+    def test_all_token_types(self) -> None:
+        cost = calculate_cost(
+            "claude-sonnet-5",
+            tokens_input=_M,
+            tokens_output=_M,
+            tokens_cache_read=_M,
+            tokens_cache_write=_M,
+        )
+        expected = sum(p._sonnet5_prices())
+        assert abs(cost - expected) < _TOL
+
+    def test_never_pricier_than_sonnet4(self) -> None:
+        """Sonnet 5 is never priced above Sonnet 4.6 (below it during the
+        promo, equal at list)."""
+        five = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=_M)
+        four = calculate_cost("claude-sonnet-4-6", tokens_input=_M, tokens_output=_M)
+        assert five <= four
+
+    def test_dated_variant_matches_tier(self) -> None:
+        """A dated 'claude-sonnet-5-*' id still resolves to the tier entry."""
+        cost = calculate_cost(
+            "claude-sonnet-5-20260930", tokens_input=_M, tokens_output=0
+        )
+        assert abs(cost - p._sonnet5_prices()[0]) < _TOL
+
+
+class TestSonnet5ListTier:
+    """claude-sonnet-5 list pricing after the promo window closes. The window
+    end is pinned to a past date so the real date.today() always exceeds it —
+    the list branch of the gate stays covered on any run date."""
+
+    @pytest.fixture(autouse=True)
+    def _promo_window_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Freeze the promo window shut: pin the end to a past date so
+        date.today() is always past it and list rates apply regardless of
+        when the suite runs."""
+        monkeypatch.setattr(p, "_SONNET5_PROMO_END", _PROMO_PAST_END)
+
+    def test_input_only(self) -> None:
+        cost = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=0)
+        assert abs(cost - _SONNET_INPUT) < _TOL
+
+    def test_output_only(self) -> None:
+        cost = calculate_cost("claude-sonnet-5", tokens_input=0, tokens_output=_M)
+        assert abs(cost - _SONNET_OUTPUT) < _TOL
+
+    def test_cache_read_only(self) -> None:
+        cost = calculate_cost(
+            "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_read=_M
+        )
+        assert abs(cost - _SONNET_CACHE_READ) < _TOL
+
+    def test_cache_write_only(self) -> None:
+        cost = calculate_cost(
+            "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_write=_M
+        )
+        assert abs(cost - _SONNET_CACHE_WRITE) < _TOL
 
     def test_all_token_types(self) -> None:
         cost = calculate_cost(
@@ -246,25 +322,15 @@ class TestSonnet5PromoTier:
             tokens_cache_write=_M,
         )
         expected = (
-            _SONNET5_INPUT
-            + _SONNET5_OUTPUT
-            + _SONNET5_CACHE_READ
-            + _SONNET5_CACHE_WRITE
+            _SONNET_INPUT + _SONNET_OUTPUT + _SONNET_CACHE_READ + _SONNET_CACHE_WRITE
         )
         assert abs(cost - expected) < _TOL
 
-    def test_cheaper_than_sonnet4(self) -> None:
-        """The promo must actually be cheaper than full Sonnet 4.6."""
+    def test_matches_sonnet4_list_price(self) -> None:
+        """Off-promo Sonnet 5 costs the same as full Sonnet 4.6."""
         five = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=_M)
         four = calculate_cost("claude-sonnet-4-6", tokens_input=_M, tokens_output=_M)
-        assert five < four
-
-    def test_dated_variant_matches_promo(self) -> None:
-        """A dated 'claude-sonnet-5-*' id still resolves to the promo entry."""
-        cost = calculate_cost(
-            "claude-sonnet-5-20260930", tokens_input=_M, tokens_output=0
-        )
-        assert abs(cost - _SONNET5_INPUT) < _TOL
+        assert abs(five - four) < _TOL
 
 
 # ---------------------------------------------------------------------------
@@ -485,37 +551,37 @@ class TestKimiTier:
 
 
 # ---------------------------------------------------------------------------
-# GLM-5.2 tier (Ollama Cloud — priced non-Anthropic, grounded in a citable
+# GLM-5.3 tier (Ollama Cloud — priced non-Anthropic, grounded in a citable
 # published rate; see the module's pricing-table comment for the source).
 # ---------------------------------------------------------------------------
 
 
 class TestGlmTier:
-    """glm-5.2:cloud pricing — Ollama Cloud, priced like grok-build/codex."""
+    """glm-5.3:cloud pricing — Ollama Cloud, priced like grok-build/codex."""
 
     def test_input_only(self) -> None:
-        cost = calculate_cost("glm-5.2:cloud", tokens_input=_M, tokens_output=0)
+        cost = calculate_cost("glm-5.3:cloud", tokens_input=_M, tokens_output=0)
         assert abs(cost - _GLM_INPUT) < _TOL
 
     def test_output_only(self) -> None:
-        cost = calculate_cost("glm-5.2:cloud", tokens_input=0, tokens_output=_M)
+        cost = calculate_cost("glm-5.3:cloud", tokens_input=0, tokens_output=_M)
         assert abs(cost - _GLM_OUTPUT) < _TOL
 
     def test_cached_input(self) -> None:
         cost = calculate_cost(
-            "glm-5.2:cloud", tokens_input=0, tokens_output=0, tokens_cache_read=_M
+            "glm-5.3:cloud", tokens_input=0, tokens_output=0, tokens_cache_read=_M
         )
         assert abs(cost - _GLM_CACHE_READ) < _TOL
 
     def test_cache_write(self) -> None:
         cost = calculate_cost(
-            "glm-5.2:cloud", tokens_input=0, tokens_output=0, tokens_cache_write=_M
+            "glm-5.3:cloud", tokens_input=0, tokens_output=0, tokens_cache_write=_M
         )
         assert abs(cost - _GLM_CACHE_WRITE) < _TOL
 
     def test_all_token_types(self) -> None:
         cost = calculate_cost(
-            "glm-5.2:cloud",
+            "glm-5.3:cloud",
             tokens_input=_M,
             tokens_output=_M,
             tokens_cache_read=_M,
@@ -525,13 +591,13 @@ class TestGlmTier:
         assert abs(cost - expected) < _TOL
 
     def test_glm_is_not_treated_as_anthropic(self) -> None:
-        assert _is_anthropic_model("glm-5.2:cloud") is False
-        assert calculate_cost("glm-5.2:cloud", tokens_input=_M, tokens_output=0) > 0.0
+        assert _is_anthropic_model("glm-5.3:cloud") is False
+        assert calculate_cost("glm-5.3:cloud", tokens_input=_M, tokens_output=0) > 0.0
 
     def test_bare_glm_tag_without_cloud_suffix_still_prices(self) -> None:
-        """The fragment match is on 'glm-5.2', independent of the ':cloud'
+        """The fragment match is on 'glm-5.3', independent of the ':cloud'
         tag suffix — a differently-tagged variant still resolves."""
-        cost = calculate_cost("glm-5.2", tokens_input=_M, tokens_output=0)
+        cost = calculate_cost("glm-5.3", tokens_input=_M, tokens_output=0)
         assert abs(cost - _GLM_INPUT) < _TOL
 
 
@@ -629,7 +695,7 @@ class TestProviderAwareness:
     """Genuinely-free local Ollama costs 0.0 per token; an ungrounded Ollama
     Cloud model also costs 0.0 (we have no rate for it — see
     ``is_ollama_cloud_model`` for the caller-side distinction from "free"). A
-    GROUNDED Ollama Cloud model (glm-5.2) is priced for real — see
+    GROUNDED Ollama Cloud model (glm-5.3) is priced for real — see
     ``TestGlmTier``."""
 
     def test_ollama_prefixed_model_returns_zero(self) -> None:
@@ -655,7 +721,7 @@ class TestProviderAwareness:
             assert _is_anthropic_model(name) is True, name
 
     def test_is_anthropic_model_false_for_non_claude_names(self) -> None:
-        for name in ("ollama/llama3", "glm-5.2:cloud", "qwen3-embedding", "gpt-4o"):
+        for name in ("ollama/llama3", "glm-5.3:cloud", "qwen3-embedding", "gpt-4o"):
             assert _is_anthropic_model(name) is False, name
 
 
@@ -730,17 +796,17 @@ class TestCostResult:
 
 
 # ---------------------------------------------------------------------------
-# Sonnet-5 promo date gate — promo on/ before 2026-08-31, list rate after.
+# Sonnet-5 promo date gate — promo on/ before 2026-09-13, list rate after.
 # ---------------------------------------------------------------------------
 
 
-def test_sonnet5_promo_active_on_or_before_2026_08_31(
+def test_sonnet5_promo_active_on_or_before_2026_09_13(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _D:
         @staticmethod
         def today() -> date:
-            return date(2026, 8, 31)
+            return date(2026, 9, 13)
 
     monkeypatch.setattr(p, "date", _D)
     assert p._lookup_prices("claude-sonnet-5") == (
@@ -751,12 +817,26 @@ def test_sonnet5_promo_active_on_or_before_2026_08_31(
     )
 
 
+def test_sonnet5_list_rate_after_promo_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The day after the promo, rates revert to the Sonnet-4.6 list."""
+
+    class _D:
+        @staticmethod
+        def today() -> date:
+            return date(2026, 9, 14)
+
+    monkeypatch.setattr(p, "date", _D)
+    assert p._lookup_prices("claude-sonnet-5") == p._SONNET5_LIST
+
+
 class TestIsOllamaCloudModel:
     """The ':cloud' tag convention, shared by pricing.py's own attribution
     logic and external callers (the TG cockpit's spend label)."""
 
     def test_cloud_tagged_model_is_cloud(self) -> None:
-        assert is_ollama_cloud_model("glm-5.2:cloud") is True
+        assert is_ollama_cloud_model("glm-5.3:cloud") is True
         assert is_ollama_cloud_model("SOME-MODEL:CLOUD") is True
 
     def test_local_model_is_not_cloud(self) -> None:
@@ -770,13 +850,13 @@ class TestIsOllamaCloudModel:
         assert is_ollama_cloud_model("") is False
 
 
-def test_sonnet5_reverts_to_list_rate_after_2026_08_31(
+def test_sonnet5_reverts_to_list_rate_after_2026_09_13(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _D:
         @staticmethod
         def today() -> date:
-            return date(2026, 9, 1)
+            return date(2026, 9, 14)
 
     monkeypatch.setattr(p, "date", _D)
     assert p._lookup_prices("claude-sonnet-5") == (
@@ -823,9 +903,9 @@ class TestInputPricePerMillion:
         assert input_price_per_million("my-custom-self-hosted-model:7b") == 0.0
 
     def test_grounded_ollama_cloud_model_has_real_rate(self) -> None:
-        """GLM-5.2 is now grounded in a real published rate, unlike an
+        """GLM-5.3 is now grounded in a real published rate, unlike an
         unpriced Ollama Cloud model."""
-        assert input_price_per_million("glm-5.2:cloud") == _GLM_INPUT
+        assert input_price_per_million("glm-5.3:cloud") == _GLM_INPUT
 
     def test_empty_model_returns_zero(self) -> None:
         assert input_price_per_million("") == 0.0
