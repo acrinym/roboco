@@ -31,7 +31,6 @@ import {
   ListChecks,
   ShieldCheck,
   GitBranch,
-  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 
