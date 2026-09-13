@@ -21,6 +21,7 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/hooks/use-tasks", () => ({
   useTaskFindings: () => ({ data: undefined }),
+  useTask: () => ({ data: undefined, isLoading: false }),
 }));
 
 // The tab panes aren't under test here — stub them so the strip's highlight
@@ -52,6 +53,9 @@ vi.mock("../tab-governance", () => ({
 }));
 vi.mock("../tab-collision", () => ({
   TabCollision: () => <div data-testid="pane-collision" />,
+}));
+vi.mock("../tab-verification", () => ({
+  TabVerification: () => <div data-testid="pane-verification" />,
 }));
 
 import { TaskTabs } from "../task-tabs";
