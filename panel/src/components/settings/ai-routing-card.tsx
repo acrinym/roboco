@@ -65,7 +65,7 @@ import {
 } from "@/lib/api/providers";
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
-import { OpenRouterProviderKeyRow } from "@/components/settings/provider-key-card";
+import { OpenRouterProviderKeyRow, ZaiProviderKeyRow } from "@/components/settings/provider-key-card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -1046,6 +1046,11 @@ export function AIRoutingCard() {
 
             {/* -------- OpenRouter key -------- */}
             <OpenRouterProviderKeyRow />
+
+            <Separator />
+
+            {/* -------- Z.ai key -------- */}
+            <ZaiProviderKeyRow />
           </div>
 
           {/* -------- Self-Hosted LLM -------- */}

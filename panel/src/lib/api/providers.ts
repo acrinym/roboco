@@ -38,6 +38,16 @@ export interface SetOpenRouterKeyRequest {
   api_key: string;
 }
 
+export interface ZaiKeyStatus {
+  has_key: boolean;
+  enabled: boolean;
+}
+
+/** Payload for setting or clearing the Z.ai API key. */
+export interface SetZaiKeyRequest {
+  api_key: string;
+}
+
 export interface ModelAssignment {
   id: string;
   scope: AssignmentScope;
@@ -59,6 +69,7 @@ export type RoutingMode =
   | "ollama"
   | "self_hosted"
   | "openrouter"
+  | "zai"
   | "mix"
   | "cost_tiered";
 
@@ -187,6 +198,18 @@ export const providersApi = {
       "/providers/openrouter-key",
       { api_key: apiKey } satisfies SetOpenRouterKeyRequest,
     );
+    return data;
+  },
+
+  getZaiKey: async (): Promise<ZaiKeyStatus> => {
+    const { data } = await api.get<ZaiKeyStatus>("/providers/zai-key");
+    return data;
+  },
+
+  setZaiKey: async (apiKey: string): Promise<ZaiKeyStatus> => {
+    const { data } = await api.put<ZaiKeyStatus>("/providers/zai-key", {
+      api_key: apiKey,
+    } satisfies SetZaiKeyRequest);
     return data;
   },
 

@@ -13,6 +13,7 @@ export const providerKeys = {
   ollamaKey: () => [...providerKeys.all, "ollama-key"] as const,
   grokKey: () => [...providerKeys.all, "grok-key"] as const,
   openRouterKey: () => [...providerKeys.all, "openrouter-key"] as const,
+  zaiKey: () => [...providerKeys.all, "zai-key"] as const,
   openRouterModels: (query: string) =>
     [...providerKeys.all, "openrouter-models", query] as const,
   mode: () => [...providerKeys.all, "mode"] as const,
@@ -85,6 +86,26 @@ export function useSetOpenRouterKey() {
     mutationFn: (apiKey: string) => providersApi.setOpenRouterKey(apiKey),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: providerKeys.openRouterKey() });
+      // Applying a mode also reads this so refresh it too.
+      qc.invalidateQueries({ queryKey: providerKeys.mode() });
+    },
+  });
+}
+
+export function useZaiKey() {
+  return useQuery({
+    queryKey: providerKeys.zaiKey(),
+    queryFn: () => providersApi.getZaiKey(),
+    staleTime: 60_000,
+  });
+}
+
+export function useSetZaiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (apiKey: string) => providersApi.setZaiKey(apiKey),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.zaiKey() });
       // Applying a mode also reads this so refresh it too.
       qc.invalidateQueries({ queryKey: providerKeys.mode() });
     },

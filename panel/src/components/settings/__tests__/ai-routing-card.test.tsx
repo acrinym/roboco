@@ -25,6 +25,8 @@ const {
   setGrokKey,
   getOpenRouterKey,
   setOpenRouterKey,
+  getZaiKey,
+  setZaiKey,
   searchOpenRouterModels,
   getMode,
   applyMode,
@@ -73,6 +75,9 @@ const {
   setGrokKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   getOpenRouterKey: vi.fn(async () => ({ key_set: false })),
   setOpenRouterKey: vi.fn(async () => ({ key_set: true })),
+  // Mirrors the backend ZaiKeyStatus schema (has_key + enabled).
+  getZaiKey: vi.fn(async () => ({ has_key: false, enabled: false })),
+  setZaiKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   searchOpenRouterModels: vi.fn(async (): Promise<OpenRouterModel[]> => []),
   getMode: vi.fn(async () => ({ mode: "anthropic", assignments: [] })),
   applyMode: vi.fn(
@@ -123,6 +128,8 @@ vi.mock("@/lib/api/providers", () => ({
     setGrokKey,
     getOpenRouterKey,
     setOpenRouterKey,
+    getZaiKey,
+    setZaiKey,
     searchOpenRouterModels,
     getMode,
     applyMode,
@@ -427,6 +434,8 @@ describe("AIRoutingCard", () => {
     setGrokKey.mockClear();
     getOpenRouterKey.mockClear();
     setOpenRouterKey.mockClear();
+    getZaiKey.mockClear();
+    setZaiKey.mockClear();
     searchOpenRouterModels.mockClear();
     getMode.mockClear();
     applyMode.mockClear();
@@ -479,7 +488,7 @@ describe("AIRoutingCard", () => {
   it("shows 'not set' badges by default and saves+clears the Grok key", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
-    expect(screen.getAllByText("not set")).toHaveLength(3); // Grok + Ollama + OpenRouter
+    expect(screen.getAllByText("not set")).toHaveLength(4); // Grok + Ollama + OpenRouter + Z.ai
 
     const grokInput = screen.getByPlaceholderText("xai-…");
     fireEvent.change(grokInput, { target: { value: "xai-secret" } });
@@ -613,7 +622,7 @@ describe("AIRoutingCard", () => {
     ).toBe("closed");
 
     const notSetBadges = screen.getAllByText("not set");
-    expect(notSetBadges).toHaveLength(3); // Grok + Ollama + OpenRouter
+    expect(notSetBadges).toHaveLength(4); // Grok + Ollama + OpenRouter + Z.ai
     for (const badge of notSetBadges) {
       expect(badge.getAttribute("data-state")).toBe("closed");
     }
