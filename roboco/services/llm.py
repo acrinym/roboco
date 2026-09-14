@@ -623,6 +623,7 @@ class ModelRoutingService(BaseService):
         "gemini",
         "kimi",
         "openrouter",
+        "zai",
         "ollama",
         "mix",
         "self_hosted",

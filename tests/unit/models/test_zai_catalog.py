@@ -14,12 +14,12 @@ from roboco.models.llm_catalog import provider_type_for_model
 from roboco.services.llm import _SINGLE_GLOBAL_MODE_BY_PROVIDER
 
 
-def test_zai_enum_value():
+def test_zai_enum_value() -> None:
     assert ModelProvider.ZAI.value == "zai"
     assert ModelProvider("zai") is ModelProvider.ZAI
 
 
-def test_zai_catalog_membership():
+def test_zai_catalog_membership() -> None:
     assert provider_type_for_model("glm-5.3") is ModelProvider.ZAI
     assert provider_type_for_model("glm-5.3-flash") is ModelProvider.ZAI
     # Neighbouring GLM tags belong to other providers (the Ollama cloud
@@ -27,5 +27,5 @@ def test_zai_catalog_membership():
     assert provider_type_for_model("glm-5.3:cloud") is not ModelProvider.ZAI
 
 
-def test_zai_mode_mapping():
+def test_zai_mode_mapping() -> None:
     assert _SINGLE_GLOBAL_MODE_BY_PROVIDER[ModelProvider.ZAI] == "zai"
