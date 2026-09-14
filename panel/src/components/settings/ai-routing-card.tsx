@@ -920,9 +920,8 @@ export function AIRoutingCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* -------- Key cards band: Grok+Ollama (left) / Self-Hosted (right) -------- */}
-        <div className="grid grid-cols-1 gap-10 lg:grid-cols-2 lg:gap-14">
-          <div className="space-y-8">
+        {/* -------- Key cards band: 2x2 provider keys, self-hosted full-width below -------- */}
+        <div className="grid grid-cols-1 items-start gap-x-10 gap-y-8 md:grid-cols-2">
             {/* -------- Grok (xAI) key -------- */}
             <section className="space-y-2">
               <div className="flex items-center justify-between">
@@ -982,8 +981,6 @@ export function AIRoutingCard() {
               )}
             </section>
 
-            <Separator />
-
             {/* -------- Ollama key -------- */}
             <section className="space-y-2">
               <div className="flex items-center justify-between">
@@ -1042,24 +1039,21 @@ export function AIRoutingCard() {
               )}
             </section>
 
-            <Separator />
-
             {/* -------- OpenRouter key -------- */}
             <OpenRouterProviderKeyRow />
 
-            <Separator />
-
             {/* -------- Z.ai key -------- */}
             <ZaiProviderKeyRow />
-          </div>
-
-          {/* -------- Self-Hosted LLM -------- */}
-          <SelfHostedSection
-            testResult={selfHostedTestResult}
-            onTestResult={handleSelfHostedTestResult}
-            onTestSuccess={() => undefined}
-          />
         </div>
+
+        <Separator />
+
+        {/* -------- Self-Hosted LLM (full width) -------- */}
+        <SelfHostedSection
+          testResult={selfHostedTestResult}
+          onTestResult={handleSelfHostedTestResult}
+          onTestSuccess={() => undefined}
+        />
 
         <Separator />
 

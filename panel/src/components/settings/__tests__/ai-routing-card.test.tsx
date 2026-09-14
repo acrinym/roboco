@@ -459,7 +459,7 @@ describe("AIRoutingCard", () => {
     vi.clearAllMocks();
   });
 
-  it("renders both key cards and the self-hosted section as one two-column band, Grok+Ollama stacked left", async () => {
+  it("renders all four provider keys as one 2x2 band with self-hosted full-width below", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
 
@@ -472,17 +472,22 @@ describe("AIRoutingCard", () => {
     expect(grokSection).toBeInTheDocument();
     expect(ollamaSection).toBeInTheDocument();
 
-    // Grok + Ollama share the same left-column container.
-    const leftColumn = grokSection?.parentElement;
-    expect(leftColumn).toContainElement(ollamaSection as HTMLElement);
-
-    // That left column and the Self-Hosted section are the two children of
-    // one responsive two-column grid band.
-    const selfHostedHeading = screen.getByText("Self-Hosted LLM");
-    const band = leftColumn?.parentElement;
-    expect(band).toContainElement(selfHostedHeading);
+    // All four key sections are direct children of one responsive two-column
+    // grid band (2x2 on lg): Grok, Ollama, OpenRouter, Z.ai.
+    const band = grokSection?.parentElement;
+    expect(band).toContainElement(ollamaSection as HTMLElement);
+    expect(band).toContainElement(
+      screen.getByText("OpenRouter API key").closest("section") as HTMLElement,
+    );
+    expect(band).toContainElement(
+      screen.getByText("Z.ai API key").closest("section") as HTMLElement,
+    );
     expect(band?.className).toContain("grid");
-    expect(band?.className).toContain("lg:grid-cols-2");
+    expect(band?.className).toContain("md:grid-cols-2");
+
+    // Self-Hosted sits full-width BELOW the band, outside the key grid.
+    const selfHostedHeading = screen.getByText("Self-Hosted LLM");
+    expect(band).not.toContainElement(selfHostedHeading);
   });
 
   it("shows 'not set' badges by default and saves+clears the Grok key", async () => {
