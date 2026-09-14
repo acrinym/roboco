@@ -18,6 +18,7 @@ import {
   useSetComplexityOverride,
   useSetGrokKey,
   useSetOllamaKey,
+  useZaiKey,
   useSelfHostedModels,
 } from "@/hooks/use-providers";
 import {
@@ -305,6 +306,9 @@ export function AIRoutingCard() {
   // --- OpenRouter API key status + model search ---
   const { data: openRouterKeyStatus } = useOpenRouterKey();
   const hasOpenRouterKey = !!openRouterKeyStatus?.key_set;
+  // --- Z.ai API key status (key row lives in ZaiProviderKeyRow) ---
+  const { data: zaiKeyStatus } = useZaiKey();
+  const hasZaiKey = !!zaiKeyStatus?.has_key;
   const [openRouterModel, setOpenRouterModel] = useState("");
   const [openRouterSearch, setOpenRouterSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -512,6 +516,28 @@ export function AIRoutingCard() {
       });
       toast.success(
         "Role/global routing now on OpenRouter — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToZai = async () => {
+    if (!hasZaiKey) {
+      toast.error("Save the Z.ai API key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to Z.ai GLM? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({ mode: "zai" });
+      toast.success(
+        "Role/global routing now on Z.ai GLM — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -1062,7 +1088,7 @@ export function AIRoutingCard() {
           <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / OpenRouter / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-10 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -1134,6 +1160,19 @@ export function AIRoutingCard() {
               onClick={flipToOpenRouter}
               disabled={applyMode.isPending || !hasOpenRouterKey}
               labelHint="One key unlocks hundreds of models on OpenRouter — GLM, DeepSeek, Qwen, Claude, GPT and more. Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
+            />
+            <ModeButton
+              icon={<Bot className="h-4 w-4" />}
+              label="Z.ai"
+              description={
+                hasZaiKey
+                  ? "Every agent uses Z.ai GLM (glm-5.3-flash)."
+                  : "Save the Z.ai key first."
+              }
+              active={currentMode === "zai"}
+              onClick={flipToZai}
+              disabled={applyMode.isPending || !hasZaiKey}
+              labelHint="Z.ai's Anthropic-compatible endpoint (api.z.ai/api/anthropic) rides the built-in Claude Code spawn — GLM 5.3 / 5.3 Flash injected as ANTHROPIC_BASE_URL at spawn. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
               icon={<Server className="h-4 w-4" />}
