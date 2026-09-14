@@ -125,7 +125,9 @@ _COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = ()
 # hits ruff's PLR0911 the moment a new provider is added, as GEMINI did).
 _SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
     ModelProvider,
-    Literal["grok", "codex", "gemini", "kimi", "openrouter", "zai", "ollama", "self_hosted"],
+    Literal[
+        "grok", "codex", "gemini", "kimi", "openrouter", "zai", "ollama", "self_hosted"
+    ],
 ] = {
     ModelProvider.GROK: "grok",
     ModelProvider.OPENAI: "codex",
@@ -1069,9 +1071,7 @@ class ModelRoutingService(BaseService):
         """
         zai = await self._get_seeded_provider(ModelProvider.ZAI)
         if not zai.auth_token_encrypted:
-            raise ValueError(
-                "Save the Z.ai API key first (PUT /providers/zai-key)."
-            )
+            raise ValueError("Save the Z.ai API key first (PUT /providers/zai-key).")
         provider_svc = ProviderService(self.session)
         await provider_svc.update_provider(
             require_uuid(zai.id),
