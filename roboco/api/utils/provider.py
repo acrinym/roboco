@@ -38,9 +38,7 @@ _PROVIDER_REMEDIATION: dict[ModelProvider, str] = {
     ModelProvider.OPENROUTER: (
         "Save the OpenRouter API key first (PUT /providers/openrouter-key)."
     ),
-    ModelProvider.ZAI: (
-        "Save the Z.ai API key first (PUT /providers/zai-key)."
-    ),
+    ModelProvider.ZAI: ("Save the Z.ai API key first (PUT /providers/zai-key)."),
 }
 
 
