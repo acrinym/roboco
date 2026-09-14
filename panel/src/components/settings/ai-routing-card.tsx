@@ -41,12 +41,6 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
-import {
   AlertTriangle,
   Bot,
   Cpu,
@@ -644,7 +638,7 @@ export function AIRoutingCard() {
       !confirm(
         "Apply cost-tiered routing? No rows are seeded automatically (the " +
           "built-in day-1 seed was retired). Pin cheaper models per role and " +
-          "complexity in the Complexity overrides section (Agents tab).",
+          "complexity in the Complexity overrides table below.",
       )
     )
       return;
@@ -919,29 +913,13 @@ export function AIRoutingCard() {
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
           <code className="px-1"> ~/.claude </code> auth; Grok (xAI), Ollama
-          Cloud, OpenRouter, and Z.ai use the API keys you save in Providers;
-          Codex, Gemini, and Kimi authenticate via their own mounted CLI
-          subscriptions (no key needed) — V1: delivery roles only, not
-          Intake/Secretary; Self-Hosted connects to any OpenAI-compatible
-          endpoint you run locally. Routing holds the mode buttons, presets,
-          and complexity tiers; Agents holds the per-agent pins.
+          Cloud, and OpenRouter use the API keys you save below; Codex, Gemini,
+          and Kimi authenticate via their own mounted CLI subscriptions (no key
+          needed) — V1: delivery roles only, not Intake/Secretary; Self-Hosted
+          connects to any OpenAI-compatible endpoint you run locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        <Tabs defaultValue="providers">
-          <TabsList>
-            <TabsTrigger value="providers">Providers</TabsTrigger>
-            <TabsTrigger value="routing">Routing</TabsTrigger>
-            <TabsTrigger value="agents">Agents</TabsTrigger>
-          </TabsList>
-          {/* forceMount keeps every tab's JSX mounted (hidden via the
-              data-[state=inactive]:hidden class) so cross-tab state and the
-              test suite see one stable DOM regardless of the active tab. */}
-          <TabsContent
-            value="providers"
-            forceMount
-            className="space-y-6 pt-4 data-[state=inactive]:hidden"
-          >
         {/* -------- Key cards band: Grok+Ollama (left) / Self-Hosted (right) -------- */}
         <div className="grid grid-cols-1 gap-10 lg:grid-cols-2 lg:gap-14">
           <div className="space-y-8">
@@ -1085,15 +1063,9 @@ export function AIRoutingCard() {
 
         <Separator />
 
-          </TabsContent>
-          <TabsContent
-            value="routing"
-            forceMount
-            className="space-y-6 pt-4 data-[state=inactive]:hidden"
-          >
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
-          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / OpenRouter / Self-Hosted replace role/global routing with that provider; per-agent pins in the Agents tab survive the switch. Mix keeps whatever's picked there.">
+          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / OpenRouter / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-10 gap-2">
@@ -1185,7 +1157,7 @@ export function AIRoutingCard() {
             <ModeButton
               icon={<Cpu className="h-4 w-4" />}
               label="Mix"
-              description="Pick a model per agent (Agents tab)."
+              description="Pick a model per agent (table appears below)."
               active={currentMode === "mix"}
               // "Mix" is engaged by picking models + Save — not a direct
               // toggle. Clicking just scrolls awareness.
@@ -1196,7 +1168,7 @@ export function AIRoutingCard() {
             <ModeButton
               icon={<Gauge className="h-4 w-4" />}
               label="Cost-Tiered"
-              description="Pin cheaper models per role and complexity in the Complexity overrides section (Agents tab). No rows are seeded automatically."
+              description="Pin cheaper models per role and complexity in the Complexity overrides table below. No rows are seeded automatically."
               active={currentMode === "cost_tiered"}
               onClick={flipToCostTiered}
               disabled={applyMode.isPending}
@@ -1208,7 +1180,7 @@ export function AIRoutingCard() {
               <AlertTriangle className="h-3 w-3 shrink-0" />
               {pinnedCount} per-agent override{pinnedCount === 1 ? "" : "s"}{" "}
               outrank the global mode — switching modes won&apos;t change those
-              agents. Clear rows in the mix table (an empty save clears
+              agents. Clear rows in the mix table below (an empty save clears
               them all).
             </p>
           ) : null}
@@ -1394,12 +1366,6 @@ export function AIRoutingCard() {
           </>
         )}
 
-          </TabsContent>
-          <TabsContent
-            value="agents"
-            forceMount
-            className="space-y-6 pt-4 data-[state=inactive]:hidden"
-          >
         {/* -------- Preset bar (compact, sits right above the per-agent table) -------- */}
         <Separator />
         <section className="space-y-2">
@@ -1678,8 +1644,6 @@ export function AIRoutingCard() {
             ))}
           </div>
         </section>
-          </TabsContent>
-        </Tabs>
       </CardContent>
     </Card>
   );
