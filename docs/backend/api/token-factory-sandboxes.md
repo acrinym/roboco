@@ -36,11 +36,12 @@ The Sandboxes API authenticates with the SAME stored Nebius API key as the infer
 - The workspace archive contains committed HEAD only (tracked files, no `.env`, no uncommitted secrets), capped at the upload ceiling.
 - The microVM is `disposable` (no image persisted) and destroyed after the run; a hung run is cancelled at the polling deadline.
 
-## Live verification status (2026-09-14, hackathon key)
+## Live verification status (2026-09-15, beta access granted - FULLY VERIFIED)
 
-- Bearer auth with the stored Nebius key: VERIFIED (GET /v1/models 200; the same key authenticates the Sandboxes endpoints).
-- `Project` header: REQUIRED (the API 400s "Missing Project header" without it). The console's project id (the `aiproject-...` id from Project settings) is the correct header value - identities resolve with it; the service-account id embedded in the key also passes identity but is NOT the project.
-- Instance spawn with the trial key: still 403 "Insufficient permissions: spawn or spawn_disposable" WITH the correct project id - the key's service account lacks the Sandboxes spawn permission. The console exposes no self-serve toggle: Sandboxes are in beta (free while beta, per the console), beta access was requested from Nebius on 2026-09-14 and is pending Nebius-side approval. Until the grant lands `run_sandbox_tests` degrades to a 403 error string and agents keep their local shells.
-- The regional inference host (`api.tokenfactory.<region>.nebius.com`) does NOT route the Sandboxes service (nginx 404) - the sandboxes base stays the global `api.tokenfactory.nebius.com/sandboxes` default.
-- Inference on the global host verified end-to-end separately (GLM-5.3-Flash chat completion, 200 + metered usage, 27 tokens).
-- Operation polling/result shape (`metadata.result`) remains spec-derived - the flattener degrades to an error string if the live shape drifts.
+- Bearer auth with the stored Nebius key + the `Project` header (the console's `aiproject-...` project id): VERIFIED.
+- Image catalog: `GET /v1/images` lists 100+ tagged images; the configured default `tag:python:3.12` exists (runs Python 3.12.13).
+- Instance spawn: VERIFIED (201 + host-rooted `Location: /sandboxes/v1/operations/<uuid>` header).
+- Operation polling and the result contract: VERIFIED (`metadata.result.state.exit_code`, `stdout.value`, `resources.cost`/`elapsed_time`).
+- The full client flow (upload -> spawn -> extraction -> command run -> poll -> flatten) verified end to end with this exact client: exit 0, stdout intact, metered cost about 0.0003 per echo-scale run.
+- One integration bug the live run caught and fixed: the poll URL must be normalized from the host-rooted Location (see wait_sandbox_operation); before the fix every poll double-pathed into empty 404s.
+- Beta limits: up to 50 concurrent operations.
