@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.29.0"
+    app_version: str = "0.30.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -2335,6 +2335,118 @@ class Settings(BaseSettings):
             "Optional X-Title sent on OpenRouter requests (site name shown on "
             "the OpenRouter usage dashboard). Override via "
             "ROBOCO_OPENROUTER_X_TITLE"
+        ),
+    )
+    # Nebius Token Factory - the same Ollama shape as OpenRouter: a static
+    # metered API key injected via env (NEBIUS_API_KEY + NEBIUS_BASE_URL), no
+    # ~/. auth mount and no refresh loop (see roboco.llm.providers.nebius).
+    # The endpoint is OpenAI-compatible at
+    # https://api.tokenfactory.nebius.com/v1; the operator's key is stored
+    # Fernet-encrypted by the routing service (set_nebius_api_key). No
+    # attribution-header fields - Token Factory has no referer/title
+    # dashboard surface.
+    nebius_base_url: str = Field(
+        default="https://api.tokenfactory.nebius.com/v1",
+        description=(
+            "Nebius Token Factory API base URL injected as NEBIUS_BASE_URL at "
+            "spawn. Override via ROBOCO_NEBIUS_BASE_URL"
+        ),
+    )
+    # The default Nebius model id (provider/model form) passed to
+    # `opencode run --model` when the routing assignment does not pin a
+    # specific model. Defaults to NVIDIA's Nemotron 3 Super (the
+    # multi-agent-optimized Nemotron on Token Factory - the NVIDIA open model
+    # the provider must run to satisfy the Nebius x NVIDIA stack); the live
+    # catalog is searched on demand (GET /providers/nebius/models) and the
+    # picked model id is stored via provider_type_override - this is only
+    # the floor.
+    nebius_cli_model: str = Field(
+        default="nvidia/nemotron-3-super-120b-a12b",
+        description=(
+            "Default Nebius Token Factory model id (provider/model) passed to "
+            "opencode when no per-assignment model is pinned. Override via "
+            "ROBOCO_NEBIUS_CLI_MODEL"
+        ),
+    )
+    # Retry_after tunables for parking the NEBIUS provider (the openrouter
+    # pattern: real Settings fields, not hardcoded module constants). The
+    # rate-limit value backs _park_nebius_rate_limited's exponential re-park
+    # backoff (429 -> exit 75); the auth value covers the missing/invalid API
+    # key preflight (401 -> exit 78).
+    nebius_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the NEBIUS provider on a "
+            "quota/rate-limit exit; override via "
+            "ROBOCO_NEBIUS_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    nebius_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the NEBIUS provider on a "
+            "missing/invalid API key (entrypoint preflight exit 78); override "
+            "via ROBOCO_NEBIUS_AUTH_RETRY_AFTER_SECONDS"
+        ),
+    )
+    # Token Factory Sandboxes (the Contree service at
+    # api.tokenfactory.nebius.com/sandboxes): ephemeral microVMs that run a
+    # command and are destroyed, used by the dev/QA-scoped run_sandbox_tests
+    # gateway verb to execute a task's test suite outside the agent
+    # container. Default-off like every autonomy surface; the sandbox calls
+    # authenticate with the SAME stored Nebius API key as the inference
+    # provider (bearer), plus an optional Project header
+    # (token_factory_sandboxes_project_id) when the account is scoped to a
+    # Nebius project id.
+    token_factory_sandboxes_enabled: bool = Field(
+        default=False,
+        description=(
+            "Arm the run_sandbox_tests gateway verb (dev/QA test runs in Token "
+            "Factory Sandbox microVMs); default off, also toggleable from "
+            "the panel's Feature Flags card"
+        ),
+    )
+    token_factory_sandboxes_base_url: str = Field(
+        default="https://api.tokenfactory.nebius.com/sandboxes",
+        description=(
+            "Contree Sandboxes API base (the client appends /v1); override "
+            "via ROBOCO_TOKEN_FACTORY_SANDBOXES_BASE_URL"
+        ),
+    )
+    token_factory_sandboxes_project_id: str = Field(
+        default="",
+        description=(
+            "Nebius project id sent as the Sandboxes API's REQUIRED "
+            "'Project' header (the API 400s without it; the hackathon "
+            "service-account id resolves). Override via "
+            "ROBOCO_TOKEN_FACTORY_SANDBOXES_PROJECT_ID"
+        ),
+    )
+    token_factory_sandboxes_image: str = Field(
+        default="tag:python:3.12",
+        description=(
+            "Default sandbox image ref (the agent may override per call); "
+            "override via ROBOCO_TOKEN_FACTORY_SANDBOXES_IMAGE"
+        ),
+    )
+    token_factory_sandboxes_timeout_seconds: int = Field(
+        default=900,
+        ge=30,
+        description=(
+            "Default per-run wall-clock ceiling inside the sandbox (the "
+            "sandbox kills the process at this); override via "
+            "ROBOCO_TOKEN_FACTORY_SANDBOXES_TIMEOUT_SECONDS"
+        ),
+    )
+    token_factory_sandboxes_max_archive_bytes: int = Field(
+        default=67108864,
+        ge=1048576,
+        description=(
+            "Max git-archive upload size for a sandbox test run (64 MiB "
+            "default); override via "
+            "ROBOCO_TOKEN_FACTORY_SANDBOXES_MAX_ARCHIVE_BYTES"
         ),
     )
     # An interactive intake/secretary chat the human abandoned (closed the tab

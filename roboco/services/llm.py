@@ -36,7 +36,7 @@ OpenRouter provider support:
 - apply_mode('openrouter', ...) enables the OPENROUTER provider and
   sets a GLOBAL assignment to the given model id via
   provider_type_override (OpenRouter models are NOT in the static
-  MODEL_CATALOG — the catalog is live, searched on demand via
+  MODEL_CATALOG - the catalog is live, searched on demand via
   GET /providers/openrouter/models).
 - set_openrouter_api_key() Fernet-encrypts the API key on the
   provider row (mirrors set_grok_api_key). Empty string clears +
@@ -48,6 +48,21 @@ OpenRouter provider support:
   the cost-tiered complexity-override downgrade-only comparator
   treats them as the cheapest tier. See _apply_openrouter's
   docstring for the full caveat.
+
+Nebius provider support (the openrouter twin, against Nebius Token
+Factory's OpenAI-compatible endpoint):
+- derive_mode() returns 'nebius' when there is exactly one
+  GLOBAL assignment pointing to the NEBIUS provider.
+- apply_mode('nebius', ...) enables the NEBIUS provider and
+  sets a GLOBAL assignment to the given model id via
+  provider_type_override (Token Factory ids are also static-catalog
+  members now - see the levels-parity batch - while the full catalog
+  stays live, searched on demand via GET /providers/nebius/models).
+- set_nebius_api_key() Fernet-encrypts the API key on the
+  provider row (mirrors set_openrouter_api_key). Empty string clears +
+  disables; non-empty encrypts + enables.
+- Same cost-tier limitation as OpenRouter: no _PRICING rows, metered
+  usage.cost attribution, 0.0 list price - see _apply_nebius.
 
 ZAI provider support (Z.ai GLM family):
 - Z.ai speaks the Anthropic Messages API at
@@ -65,6 +80,7 @@ ZAI provider support (Z.ai GLM family):
   non-empty encrypts + enables.
 - Cost-tier limitation mirrors OpenRouter: no _PRICING rows, so
   input_price_per_million returns 0.0 for any ZAI model.
+>>>>>>> origin/slave
 """
 
 from __future__ import annotations
@@ -126,7 +142,15 @@ _COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = ()
 _SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
     ModelProvider,
     Literal[
-        "grok", "codex", "gemini", "kimi", "openrouter", "zai", "ollama", "self_hosted"
+        "grok",
+        "codex",
+        "gemini",
+        "kimi",
+        "openrouter",
+        "nebius",
+        "zai",
+        "ollama",
+        "self_hosted",
     ],
 ] = {
     ModelProvider.GROK: "grok",
@@ -134,6 +158,7 @@ _SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
     ModelProvider.GEMINI: "gemini",
     ModelProvider.KIMI: "kimi",
     ModelProvider.OPENROUTER: "openrouter",
+    ModelProvider.NEBIUS: "nebius",
     ModelProvider.ZAI: "zai",
     ModelProvider.OLLAMA_CLOUD: "ollama",
     ModelProvider.LOCAL: "self_hosted",
@@ -225,6 +250,94 @@ async def probe_openrouter_models(
     return _filter_openrouter_models(raw_models, query.lower()), None
 
 
+_NEBIUS_MODELS_TIMEOUT = 10.0
+
+
+async def probe_nebius_models(
+    api_key: str, query: str = ""
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Fetch the model list from Nebius Token Factory's live API.
+
+    Hits ``{settings.nebius_base_url}/models`` with the bearer key and
+    filters by the optional ``query`` substring (case-insensitive match on
+    the model id / name). Returns ``(models, None)`` on success or
+    ``([], error_message)`` on any failure. Never raises - mirrors
+    ``probe_openrouter_models``.
+
+    Token Factory's list is the generic OpenAI-compatible ``GET /v1/models``
+    shape (``{"data": [{"id": ...}, ...]}``) - unlike OpenRouter it carries
+    NO capability metadata (no ``supported_parameters`` tool filter, no
+    pricing, usually no context length), so the only filter is the query
+    substring and the only field of substance is ``id``. Each returned dict
+    keeps the OpenRouter entry shape (``id`` / ``name`` / ``context_length``
+    / ``pricing``) with the absent fields defaulted, so the panel's model
+    picker renders it unchanged.
+    """
+    url = settings.nebius_base_url.rstrip("/") + "/models"
+    try:
+        async with httpx.AsyncClient(timeout=_NEBIUS_MODELS_TIMEOUT) as client:
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.TimeoutException:
+        return (
+            [],
+            f"Connection to Nebius timed out after {_NEBIUS_MODELS_TIMEOUT}s",
+        )
+    except httpx.ConnectError:
+        return [], "Could not connect to Nebius - service may be offline"
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        if status_code == 401:  # noqa: PLR2004
+            return [], "Nebius API key is invalid or expired"
+        return [], f"Nebius returned HTTP {status_code}"
+    except Exception as exc:
+        _log.error(
+            "Unexpected error probing Nebius models",
+            error=exc.__class__.__name__,
+        )
+        return [], "An unexpected error occurred while probing Nebius."
+
+    raw_models = data.get("data", []) if isinstance(data, dict) else []
+    return _filter_nebius_models(raw_models, query.lower()), None
+
+
+def _filter_nebius_models(
+    raw_models: list[Any], query_lower: str
+) -> list[dict[str, Any]]:
+    """Filter raw Nebius model dicts to query-matching entries.
+
+    Token Factory carries no capability metadata on the list endpoint, so
+    there is no tool-support filter (parity would be a lie); ``name`` falls
+    back to the id when absent, and ``context_length`` / ``pricing`` default
+    to None / {} to keep the OpenRouter entry shape.
+    """
+    models: list[dict[str, Any]] = []
+    for m in raw_models:
+        if not isinstance(m, dict):
+            continue
+        model_id = m.get("id", "")
+        name = m.get("name") or model_id
+        if (
+            query_lower
+            and query_lower not in model_id.lower()
+            and query_lower not in name.lower()
+        ):
+            continue
+        models.append(
+            {
+                "id": model_id,
+                "name": name,
+                "context_length": m.get("context_length"),
+                "pricing": m.get("pricing", {}),
+            }
+        )
+    return models
+
+
 def _filter_openrouter_models(
     raw_models: list[Any], query_lower: str
 ) -> list[dict[str, Any]]:
@@ -295,6 +408,7 @@ INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
     ModelProvider.GEMINI,
     ModelProvider.KIMI,
     ModelProvider.OPENROUTER,
+    ModelProvider.NEBIUS,
 )
 
 
@@ -579,12 +693,17 @@ class ModelRoutingService(BaseService):
         # deliberately excluded — its enable state is gated on the xAI key
         # (set_grok_api_key), unlike LOCAL/Codex/Gemini/Kimi which have no key
         # to gate on (self-hosted's own base_url + mounted-subscription auth).
+        # OPENROUTER/NEBIUS ARE key-gated but still auto-enabled here (the
+        # openrouter precedent): an explicit assignment is a deliberate
+        # operator choice, and the spawn-time key check (ProviderError +
+        # entrypoint exit 78) is what actually catches a missing key.
         if provider_type_for_log in (
             ModelProvider.LOCAL,
             ModelProvider.GEMINI,
             ModelProvider.OPENAI,
             ModelProvider.KIMI,
             ModelProvider.OPENROUTER,
+            ModelProvider.NEBIUS,
         ):
             provider_svc = ProviderService(self.session)
             await provider_svc.update_provider(
@@ -623,6 +742,7 @@ class ModelRoutingService(BaseService):
         "gemini",
         "kimi",
         "openrouter",
+        "nebius",
         "zai",
         "ollama",
         "mix",
@@ -638,6 +758,7 @@ class ModelRoutingService(BaseService):
           - only a global row, OPENAI       → "codex"
           - only a global row, GEMINI       → "gemini"
           - only a global row, KIMI         → "kimi"
+          - only a global row, NEBIUS       → "nebius"
           - anything else                   → "mix"
         """
         assignments = await self.list_assignments()
@@ -713,6 +834,27 @@ class ModelRoutingService(BaseService):
         )
         # Re-fetch for the caller.
         return await self._get_seeded_provider(ModelProvider.OPENROUTER)
+
+    async def set_nebius_api_key(self, api_key: str) -> ProviderConfigTable:
+        """Set / clear the Nebius Token Factory provider's API key.
+
+        Empty string clears + disables; a real key Fernet-encrypts + enables.
+        Operates on the single pre-seeded Nebius row - no provider
+        creation happens here. The key is a standard Nebius API key used
+        against https://api.tokenfactory.nebius.com/v1.
+        """
+        provider = await self._get_seeded_provider(ModelProvider.NEBIUS)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(provider.id),
+            ProviderUpdate(
+                auth_token=api_key if api_key else None,
+                clear_auth_token=not api_key,
+                enabled=bool(api_key),
+            ),
+        )
+        # Re-fetch for the caller.
+        return await self._get_seeded_provider(ModelProvider.NEBIUS)
 
     async def set_zai_api_key(self, api_key: str) -> ProviderConfigTable:
         """Set / clear the Z.ai provider's API key.
@@ -828,6 +970,12 @@ class ModelRoutingService(BaseService):
             provider, set the GLOBAL default to a Kimi model (default
             kimi-code/k3). No key check — subscription-CLI auth
             (~/.kimi-code), same shape as Codex/Gemini.
+          - "nebius":      wipe role/global assignments, force-enable the
+            NEBIUS provider, set the GLOBAL default to a Nebius Token
+            Factory model (default settings.nebius_cli_model, an NVIDIA
+            Nemotron 3 id). No key check at mode-apply time (mirrors
+            openrouter - the spawn-time key check is the gate), same
+            provider_type_override shape.
           - "mix":         apply per-agent map verbatim. Any agent not in the
             map falls through to the GLOBAL default — which is whatever it
             was (preserves prior state). Self-hosted model names (not in the
@@ -850,6 +998,7 @@ class ModelRoutingService(BaseService):
             "gemini": lambda: self._apply_gemini(default_model),
             "kimi": lambda: self._apply_kimi(default_model),
             "openrouter": lambda: self._apply_openrouter(default_model),
+            "nebius": lambda: self._apply_nebius(default_model),
             "zai": lambda: self._apply_zai(default_model),
             "ollama": lambda: self._apply_ollama(default_model),
             "self_hosted": lambda: self._apply_self_hosted(default_model),
@@ -861,7 +1010,8 @@ class ModelRoutingService(BaseService):
             raise ValueError(
                 f"Unknown mode '{mode}'."
                 " Use 'anthropic', 'grok', 'codex', 'gemini', 'kimi', 'openrouter',"
-                " 'zai', 'ollama', 'self_hosted', 'mix', or 'cost_tiered'."
+                " 'nebius', 'zai', 'ollama', 'self_hosted', 'mix', or"
+                " 'cost_tiered'."
             )
         await handler()
 
@@ -1031,7 +1181,7 @@ class ModelRoutingService(BaseService):
         """
         await self._wipe_mode_switch_assignments()
         # Force-enable the OPENROUTER provider row (belt-and-suspenders
-        # against a row disabled by a key clear — the mode button should
+        # against a row disabled by a key clear - the mode button should
         # route to OpenRouter regardless, and the key check is the
         # operator's responsibility at set-time).
         openrouter = await self._get_seeded_provider(ModelProvider.OPENROUTER)
@@ -1048,6 +1198,47 @@ class ModelRoutingService(BaseService):
             provider_type_override=ModelProvider.OPENROUTER,
         )
         self.log.info("Mode applied: openrouter", default_model=model_name)
+
+    async def _apply_nebius(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to a Nebius Token Factory
+        model.
+
+        The ``_apply_openrouter`` twin: the operator may search the live
+        catalog (GET /providers/nebius/models) and the four Nemotron ids are
+        also static-catalog members (levels-parity batch), but a picked id
+        is upserted with ``provider_type_override=ModelProvider.NEBIUS``
+        regardless so it stores directly against the Nebius provider row.
+
+        Cost-tier limitation: identical to OpenRouter's - no ``_PRICING``
+        rows (cost is attributed from the metered ``usage.cost`` at the
+        provider layer), so ``input_price_per_million`` returns ``0.0`` for
+        any Nebius model name and the cost-tiered complexity-override
+        downgrade-only comparator treats them as the cheapest tier. Known
+        ceiling, documented here; acceptable because the operator is making
+        a deliberate choice.
+
+        AGENT_SLUG pins and complexity overrides are preserved (see
+        ``_wipe_mode_switch_assignments``).
+        """
+        await self._wipe_mode_switch_assignments()
+        # Force-enable the NEBIUS provider row (belt-and-suspenders
+        # against a row disabled by a key clear - the mode button should
+        # route to Nebius regardless, and the key check is the
+        # operator's responsibility at set-time).
+        nebius = await self._get_seeded_provider(ModelProvider.NEBIUS)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(nebius.id),
+            ProviderUpdate(enabled=True),
+        )
+        model_name = default_model or settings.nebius_cli_model
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+            provider_type_override=ModelProvider.NEBIUS,
+        )
+        self.log.info("Mode applied: nebius", default_model=model_name)
 
     async def _apply_zai(self, default_model: str | None) -> None:
         """Wipe assignments, set the GLOBAL default to a Z.ai GLM model.

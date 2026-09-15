@@ -132,7 +132,9 @@ class OpenRouterModelEntry(BaseModel):
     name from OpenRouter. ``context_length`` is the max context in tokens.
     ``prompt_price`` / ``completion_price`` are the per-token USD rates as
     floats (converted from OpenRouter's string rates) for the UI's pricing
-    display.
+    display. Shared with the Nebius model search (the OpenAI-compatible
+    Token Factory list carries the same fields, mostly absent, so the same
+    nullable shape serves both).
     """
 
     id: str
@@ -140,6 +142,29 @@ class OpenRouterModelEntry(BaseModel):
     context_length: int | None = None
     prompt_price: float | None = None
     completion_price: float | None = None
+
+
+# =============================================================================
+# NEBIUS API KEY
+# =============================================================================
+
+
+class NebiusKeyStatus(BaseModel):
+    """Whether the Nebius provider has a stored key."""
+
+    has_key: bool
+    enabled: bool
+
+
+class SetNebiusKeyRequest(BaseModel):
+    """Set or clear the Nebius Token Factory API key.
+
+    Pass an empty string to clear. Pass a non-empty string to save
+    (encrypted with Fernet) and mark the Nebius provider enabled.
+    Used against https://api.tokenfactory.nebius.com/v1.
+    """
+
+    api_key: str = Field(default="")
 
 
 # =============================================================================
@@ -279,6 +304,7 @@ class ApplyModeRequest(BaseModel):
         "gemini",
         "kimi",
         "openrouter",
+        "nebius",
         "zai",
         "ollama",
         "mix",
@@ -299,6 +325,7 @@ class ModeResponse(BaseModel):
         "gemini",
         "kimi",
         "openrouter",
+        "nebius",
         "zai",
         "ollama",
         "mix",
@@ -375,6 +402,7 @@ class RoutingPresetApplyResponse(BaseModel):
         "gemini",
         "kimi",
         "openrouter",
+        "nebius",
         "zai",
         "ollama",
         "mix",

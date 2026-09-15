@@ -234,6 +234,16 @@ class ModelProvider(StrEnum):
     list on demand via GET /providers/openrouter/models — never preloaded.
     Cost is attributed from OpenRouter's own metered usage.cost, not a static
     pricing table.
+    `NEBIUS` is Nebius Token Factory (https://tokenfactory.nebius.com) -
+    Nebius's OpenAI-compatible inference API serving 60+ open models
+    (NVIDIA Nemotron, DeepSeek, Qwen, Llama) behind one metered API key.
+    Same Ollama shape as OPENROUTER: a stored Fernet-encrypted API key
+    injected as NEBIUS_API_KEY/NEBIUS_BASE_URL at spawn, agents run through
+    the opencode CLI on the roboco-agent-nebius image (one-shot delivery
+    roles only - no interactive intake/secretary support). The default model
+    is an NVIDIA Nemotron 3 id, and cost is attributed from the metered
+    usage.cost field, not a static pricing table.
+
     `ZAI` is Z.ai (https://z.ai) - the GLM family (GLM 5.3, GLM 5.3 Flash)
     billed by a Z.ai subscription or API credits. Z.ai exposes an
     Anthropic-compatible endpoint (https://api.z.ai/api/anthropic) that
@@ -252,6 +262,7 @@ class ModelProvider(StrEnum):
     GEMINI = "gemini"
     KIMI = "kimi"
     OPENROUTER = "openrouter"
+    NEBIUS = "nebius"
     ZAI = "zai"
 
 

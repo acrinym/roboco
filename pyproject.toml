@@ -1,6 +1,6 @@
 [project]
 name = "roboco"
-version = "0.29.0"
+version = "0.30.0"
 description = "AI Agents Company - A virtual organization of AI agents functioning as a software development workforce"
 authors = [
     {name = "Renzo Franceschini", email = "rennf93@users.noreply.github.com"}
@@ -364,6 +364,13 @@ select = [
 # base_url, auth_token, mcp_config_path) — the model kwarg is how the
 # opencode model-ref prefixing tests hand over bare vs custom catalog ids.
 "tests/unit/llm/providers/test_openrouter_provider.py" = ["PLR0913"]
+# Nebius tests: line-for-line clones of the OpenRouter suites above, so the
+# same rule relaxations apply for the same reasons (usage 4-bucket event
+# shape, deferred tempfile imports in the config-render tests, the
+# spawn-config contract kwarg count).
+"tests/unit/llm/providers/test_nebius_cli_usage.py" = ["PLR0913", "PLR2004"]
+"tests/unit/llm/providers/test_nebius_cli_config.py" = ["PLC0415"]
+"tests/unit/llm/providers/test_nebius_provider.py" = ["PLR0913"]
 
 # =============================================================================
 # MyPy Configuration
