@@ -276,6 +276,34 @@ async def test_wait_returns_terminal_body(
 
 
 @pytest.mark.asyncio
+async def test_wait_normalizes_host_rooted_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LIVE-VERIFIED: the spawn Location header is host-rooted
+    ("/sandboxes/v1/operations/<uuid>"), not /v1-relative - the poll must
+    strip the duplicated service prefix or it 404s/empty-bodies forever."""
+
+    class _RecordingClient(_FakeClient):
+        pass
+
+    fake = _FakeClient(
+        [
+            _FakeResponse(_operation("SUCCESS", _result(exit_code=0))),
+        ]
+    )
+    _patch_client(monkeypatch, fake)
+
+    body, error = await ns.wait_sandbox_operation(
+        _KEY, "/sandboxes/v1/operations/op-1", 60
+    )
+
+    assert error is None
+    assert body is not None
+    # The poll hit the /v1-relative path exactly once, with no duplication.
+    assert ("GET", "/operations/op-1", fake.calls[0][2]) == fake.calls[0]
+
+
+@pytest.mark.asyncio
 async def test_wait_deadline_cancels_and_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -294,7 +322,7 @@ async def test_wait_deadline_cancels_and_errors(
     assert error is not None
     assert "polling deadline" in error
     assert any(
-        method == "DELETE" and url == "/v1/operations/op-1"
+        method == "DELETE" and url == "/operations/op-1"
         for method, url, _kw in fake.calls
     )
 

@@ -268,7 +268,13 @@ async def wait_sandbox_operation(
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + deadline_seconds
-    op_url = operation_path if operation_path.startswith("/") else f"/{operation_path}"
+    # The Location header is HOST-ROOTED (live-verified 2026-09-15: spawn
+    # returns "/sandboxes/v1/operations/<uuid>"), not relative to the /v1
+    # base _client() uses - so normalize it to /v1-relative by stripping the
+    # duplicated service prefix, keeping the last "/v1/" anchor.
+    v1_idx = operation_path.rfind("/v1/")
+    op_rel = operation_path[v1_idx + len("/v1") :] if v1_idx != -1 else operation_path
+    op_url = op_rel if op_rel.startswith("/") else f"/{op_rel}"
     body: dict[str, Any] | None = None
     while True:
         resp, error = await _request(api_key, "GET", "polling the sandbox run", op_url)
