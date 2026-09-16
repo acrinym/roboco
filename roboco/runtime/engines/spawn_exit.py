@@ -986,6 +986,24 @@ class SpawnExitEngine(_Base):
             usage_session_id = instance.usage_session_id if instance else None
             doctrine_version = self._doctrine_version_for_instance(instance)
 
+            # A session that did real work but captured zero tokens is a
+            # usage-capture gap (SDK miss AND transcript miss, or a one-shot
+            # CLI that never wrote usage.json). It silently undercounts spend
+            # as literal $0, so surface it loudly instead of finalizing quiet.
+            if (turns or tool_calls) and not (
+                tokens_input or tokens_output or tokens_cache_read or tokens_cache_write
+            ):
+                logger.warning(
+                    "Zero token capture for an active spawn session "
+                    "(usage/capture gap: spend will be undercounted)",
+                    agent_id=agent_id,
+                    provider=self.get_provider_for_agent(agent_id),
+                    model=model,
+                    turns=turns,
+                    tool_calls=tool_calls,
+                    exit_reason=exit_reason,
+                )
+
             cost = self._resolve_finalize_cost(
                 agent_id,
                 self.get_provider_for_agent(agent_id),
