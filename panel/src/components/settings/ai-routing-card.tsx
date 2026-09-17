@@ -9,6 +9,7 @@ import {
   useDeleteComplexityOverride,
   useDeletePreset,
   useGrokKey,
+  useHumminKey,
   useNebiusKey,
   useOllamaKey,
   useOpenRouterKey,
@@ -71,6 +72,7 @@ import {
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
 import {
+  HumminProviderKeyRow,
   NebiusProviderKeyRow,
   OpenRouterProviderKeyRow,
   ZaiProviderKeyRow,
@@ -132,11 +134,9 @@ const AGENT_GROUP_DEFS: {
   },
 ];
 
-// Codex/Gemini/Kimi are V1 delivery-roles-only — no interactive Intake/
-// Secretary support (see roboco.llm.providers.codex / .gemini / .kimi). This
-// group's per-agent picker excludes all three providers below instead of
-// offering a route that would silently misroute the persistent Intake/
-// Secretary session at spawn.
+// Every provider powers the interactive Intake/Secretary chats since
+// 2026-09-17 (the provider-generic live driver), so this group's per-agent
+// picker renders the FULL catalog - no exclusions.
 const INTERACTIVE_ONLY_GROUP_TITLE = "Intake / Secretary / PR Review";
 
 // Stable within-group ordering (PM/lead first, devs, QA, doc, reviewer last)
@@ -342,6 +342,11 @@ export function AIRoutingCard() {
   // --- Z.ai API key status (key row lives in ZaiProviderKeyRow) ---
   const { data: zaiKeyStatus } = useZaiKey();
   const hasZaiKey = !!zaiKeyStatus?.has_key;
+  // --- hummin (GLM Coding Plan) key status (row lives in
+  // HumminProviderKeyRow) — the ZAI row's key does NOT carry over; the
+  // providers stay independent.
+  const { data: humminKeyStatus } = useHumminKey();
+  const hasHumminKey = !!humminKeyStatus?.has_key;
   const [openRouterModel, setOpenRouterModel] = useState("");
   const [openRouterSearch, setOpenRouterSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -424,6 +429,10 @@ export function AIRoutingCard() {
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.NEBIUS,
   );
+  const catalogHumminOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.HUMMIN,
+  );
   const catalogAnthropicOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.ANTHROPIC,
@@ -475,15 +484,14 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Codex? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary stay on Anthropic (Codex has no interactive " +
-          "chat support).",
+          "Intake and Secretary chat on Codex too."
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "codex" });
       toast.success(
-        "Role/global routing now on Codex — pins/overrides kept, Intake & Secretary stay on Anthropic",
+        "Role/global routing now on Codex, pins/overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -495,15 +503,14 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Gemini? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary stay on Anthropic (Gemini has no interactive " +
-          "chat support).",
+          "Intake and Secretary chat on Gemini too."
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "gemini" });
       toast.success(
-        "Role/global routing now on Gemini — pins/overrides kept, Intake & Secretary stay on Anthropic",
+        "Role/global routing now on Gemini, pins/overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -515,15 +522,14 @@ export function AIRoutingCard() {
       !confirm(
         "Switch every agent to Kimi? Per-agent pins and complexity " +
           "overrides are kept; other role/global assignments are replaced. " +
-          "Intake and Secretary stay on Anthropic (Kimi has no interactive " +
-          "chat support).",
+          "Intake and Secretary chat on Kimi too."
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "kimi" });
       toast.success(
-        "Role/global routing now on Kimi — pins/overrides kept, Intake & Secretary stay on Anthropic",
+        "Role/global routing now on Kimi, pins/overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -620,6 +626,29 @@ export function AIRoutingCard() {
       await applyMode.mutateAsync({ mode: "zai" });
       toast.success(
         "Role/global routing now on Z.ai GLM — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToHummin = async () => {
+    if (!hasHumminKey) {
+      toast.error("Save the hummin (GLM Coding Plan) key first");
+      return;
+    }
+    if (
+      !confirm(
+        "Switch every agent to GLM via the hummin CLI? Per-agent pins and " +
+          "complexity overrides are kept; other role/global assignments " +
+          "are replaced.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({ mode: "hummin" });
+      toast.success(
+        "Role/global routing now on GLM (hummin) — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -876,10 +905,10 @@ export function AIRoutingCard() {
   };
 
   // The full per-agent model-picker option list, shared by every group's
-  // Select — factored out so the Codex/Gemini exclusion for the interactive
-  // group (`restrictInteractiveOnly`) doesn't require duplicating the whole
-  // catalog-grouped SelectContent tree.
-  const renderMixSelectOptions = (restrictInteractiveOnly: boolean) => (
+  // Select. `restrictInteractiveOnly` no longer excludes any provider:
+  // since 2026-09-17 every provider powers the interactive chats via the
+  // provider-generic live driver, so every group renders the full catalog.
+  const renderMixSelectOptions = () => (
     <>
       <SelectItem value="__clear__">(inherit global)</SelectItem>
 
@@ -917,8 +946,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Codex (OpenAI) models — excluded for the interactive-only group */}
-      {!restrictInteractiveOnly && catalogOpenaiOnly.length > 0 && (
+      {/* Codex (OpenAI) models */}
+      {catalogOpenaiOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="openai" />
@@ -934,8 +963,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Gemini (Google) models — excluded for the interactive-only group */}
-      {!restrictInteractiveOnly && catalogGeminiOnly.length > 0 && (
+      {/* Gemini (Google) models */}
+      {catalogGeminiOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="gemini" />
@@ -951,8 +980,8 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Kimi (Moonshot) models — excluded for the interactive-only group */}
-      {!restrictInteractiveOnly && catalogKimiOnly.length > 0 && (
+      {/* Kimi (Moonshot) models */}
+      {catalogKimiOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="kimi" />
@@ -968,16 +997,31 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
-      {/* Nebius (Token Factory) models - excluded for the interactive-only
-          group: Nebius is one-shot V1 (no interactive Intake/Secretary
-          image), and the server-side interactive guard rejects it anyway. */}
-      {!restrictInteractiveOnly && catalogNebiusOnly.length > 0 && (
+      {/* Nebius (Token Factory) models */}
+      {catalogNebiusOnly.length > 0 && (
         <SelectGroup>
           <SelectLabel>
             <ProviderBadge variant="nebius" />
             Nebius (Token Factory)
           </SelectLabel>
           {catalogNebiusOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
+      {/* hummin (GLM via the GLM-native CLI) models */}
+      {catalogHumminOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="hummin" />
+            GLM (hummin)
+          </SelectLabel>
+          {catalogHumminOnly.map(
             (c: { model_name: string; display_name: string }) => (
               <SelectItem key={c.model_name} value={c.model_name}>
                 {c.display_name}
@@ -1166,13 +1210,15 @@ export function AIRoutingCard() {
           {/* -------- OpenRouter key -------- */}
           <OpenRouterProviderKeyRow />
 
-          <Separator />
+          {/* -------- Z.ai key -------- */}
+          <ZaiProviderKeyRow />
 
           {/* -------- Nebius key -------- */}
           <NebiusProviderKeyRow />
 
-          {/* -------- Z.ai key -------- */}
-          <ZaiProviderKeyRow />
+          {/* -------- hummin (GLM Coding Plan) key — independent of the
+             ZAI row's key on purpose (separate providers, separate keys) */}
+          <HumminProviderKeyRow />
         </div>
 
         <Separator />
@@ -1278,17 +1324,17 @@ export function AIRoutingCard() {
               labelHint="One key unlocks Nebius AI Studio's hosted open models (DeepSeek, Qwen, Llama and more). Pick a model in the search picker below. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
-              icon={<Bot className="h-4 w-4" />}
-              label="Z.ai"
+              icon={<Sparkles className="h-4 w-4" />}
+              label="Hummin (GLM)"
               description={
-                hasZaiKey
-                  ? "Every agent uses Z.ai GLM (glm-5.3-flash)."
-                  : "Save the Z.ai key first."
+                hasHumminKey
+                  ? "Every agent uses GLM via the hummin CLI."
+                  : "Save the hummin (GLM Coding Plan) key first."
               }
-              active={currentMode === "zai"}
-              onClick={flipToZai}
-              disabled={applyMode.isPending || !hasZaiKey}
-              labelHint="Z.ai's Anthropic-compatible endpoint (api.z.ai/api/anthropic) rides the built-in Claude Code spawn — GLM 5.3 / 5.3 Flash injected as ANTHROPIC_BASE_URL at spawn. V1: delivery roles only, not offered for Intake/Secretary."
+              active={currentMode === "hummin"}
+              onClick={flipToHummin}
+              disabled={applyMode.isPending || !hasHumminKey}
+              labelHint="The GLM go-to: the GLM-native hummin CLI headless in Docker, key injected as ZAI_API_KEY. GLM 5.3 / 5.3 Flash / 5.3 Highspeed in the Mix picker. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
               icon={<Server className="h-4 w-4" />}
@@ -1744,8 +1790,6 @@ export function AIRoutingCard() {
           ) : (
             <div className="divide-y rounded-md border">
               {agentGroups.map((group) => {
-                const restrictInteractiveOnly =
-                  group.title === INTERACTIVE_ONLY_GROUP_TITLE;
                 return (
                   <div key={group.title} className="p-4">
                     <HelpTip label={group.titleHint}>
@@ -1753,13 +1797,6 @@ export function AIRoutingCard() {
                         {group.title}
                       </h4>
                     </HelpTip>
-                    {restrictInteractiveOnly ? (
-                      <p className="mb-2 text-[11px] text-muted-foreground">
-                        Codex, Gemini, Kimi, and Nebius are delivery-roles-only
-                        (V1) — not offered here (no interactive Intake/Secretary
-                        support).
-                      </p>
-                    ) : null}
                     <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
                       {group.agents.map((a) => (
                         <div
@@ -1787,7 +1824,7 @@ export function AIRoutingCard() {
                               <SelectValue placeholder="(inherit)" />
                             </SelectTrigger>
                             <SelectContent>
-                              {renderMixSelectOptions(restrictInteractiveOnly)}
+                              {renderMixSelectOptions()}
                             </SelectContent>
                           </Select>
                         </div>
@@ -1952,7 +1989,8 @@ function ProviderBadge({
     | "nebius"
     | "ollama"
     | "self-hosted"
-    | "openrouter";
+    | "openrouter"
+    | "hummin";
 }) {
   const styles: Record<string, string> = {
     anthropic: "bg-blue-500/20 text-blue-700 dark:text-blue-400",
@@ -1964,6 +2002,7 @@ function ProviderBadge({
     kimi: "bg-amber-500/20 text-amber-700 dark:text-amber-400",
     nebius: "bg-lime-500/20 text-lime-700 dark:text-lime-400",
     openrouter: "bg-indigo-500/20 text-indigo-700 dark:text-indigo-400",
+    hummin: "bg-rose-500/20 text-rose-700 dark:text-rose-400",
   };
   const labels: Record<string, string> = {
     anthropic: "A",
@@ -1975,6 +2014,7 @@ function ProviderBadge({
     kimi: "K",
     nebius: "N",
     openrouter: "OR",
+    hummin: "H",
   };
   return (
     <span

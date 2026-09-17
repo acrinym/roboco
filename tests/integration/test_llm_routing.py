@@ -11,7 +11,11 @@ from roboco.db.tables import ProviderConfigTable
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.services.base import NotFoundError
-from roboco.services.llm import ModelRoutingService, get_model_routing_service
+from roboco.services.llm import (
+    _HUMMIN_ROLE_TIERS,
+    ModelRoutingService,
+    get_model_routing_service,
+)
 from roboco.services.provider import ProviderService, ProviderUpdate
 from roboco.utils.crypto import EncryptionError
 
@@ -91,8 +95,15 @@ async def llm_setup(
         type=ModelProvider.NEBIUS,
         enabled=False,
     )
+    # Mirrors migration 102_seed_hummin_provider's contract: enabled=True
+    # from birth (spawn-time key check is the gate, not the row).
+    hummin = ProviderConfigTable(
+        name="hummin-test",
+        type=ModelProvider.HUMMIN,
+        enabled=True,
+    )
     db_session.add_all(
-        [anthropic, grok, ollama, openai, gemini, kimi, openrouter, nebius]
+        [anthropic, grok, ollama, openai, gemini, kimi, openrouter, nebius, hummin]
     )
     await db_session.flush()
     yield {"svc": ModelRoutingService(db_session)}
@@ -384,6 +395,61 @@ async def test_apply_mode_grok_enables_grok_provider(llm_setup: dict) -> None:
     await svc.apply_mode(mode="grok")
 
     refetched = await provider_svc.get_provider(cast("UUID", grok.id))
+    assert refetched is not None
+    assert refetched.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_hummin_seeds_role_tiers(llm_setup: dict) -> None:
+    """apply_mode('hummin') seeds the oversight/delivery role split on top of
+    the GLOBAL default: board/reviewer/main-PM roles on the high-thinking
+    flash variant, delivery roles on the low-thinking flash variant. Idempotent
+    on re-apply; AGENT_SLUG pins survive untouched."""
+    svc = llm_setup["svc"]
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name="glm-5.3-flash",
+    )
+    await svc.apply_mode(mode="hummin")
+    await svc.apply_mode(mode="hummin")  # idempotent re-apply
+
+    assignments = await svc.list_assignments()
+    by_key = {(a.scope, a.scope_value): a.model_name for a in assignments}
+    assert by_key[(AssignmentScope.GLOBAL, None)] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "auditor")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "product_owner")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "head_marketing")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "pr_reviewer")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "main_pm")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "developer")] == "glm-5.3-flash:low"
+    assert by_key[(AssignmentScope.ROLE, "qa")] == "glm-5.3-flash:low"
+    assert by_key[(AssignmentScope.ROLE, "documenter")] == "glm-5.3-flash:low"
+    assert by_key[(AssignmentScope.ROLE, "cell_pm")] == "glm-5.3-flash:low"
+    # Re-apply must upsert, not duplicate.
+    role_rows = [a for a in assignments if a.scope == AssignmentScope.ROLE]
+    assert len(role_rows) == len(_HUMMIN_ROLE_TIERS)
+    # Per-agent pins are outside mode state.
+    assert by_key[(AssignmentScope.AGENT_SLUG, "be-dev-1")] == "glm-5.3-flash"
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_hummin_enables_provider(llm_setup: dict) -> None:
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    hummin = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.HUMMIN
+    )
+    await provider_svc.update_provider(
+        cast("UUID", hummin.id), ProviderUpdate(enabled=False)
+    )
+    await svc.session.flush()
+
+    await svc.apply_mode(mode="hummin")
+
+    refetched = await provider_svc.get_provider(cast("UUID", hummin.id))
     assert refetched is not None
     assert refetched.enabled is True
 
@@ -973,16 +1039,19 @@ async def test_apply_mode_codex_end_to_end_reachable(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["codex", "gemini", "kimi"])
+@pytest.mark.parametrize(
+    "mode,provider_value",
+    [("codex", "openai"), ("gemini", "gemini"), ("kimi", "kimi")],
+)
 @pytest.mark.parametrize("interactive_slug", ["intake-1", "secretary-1"])
-async def test_interactive_agents_exempt_from_delivery_only_global_mode(
-    llm_setup: dict, mode: str, interactive_slug: str
+async def test_interactive_agents_follow_the_fleet_mode(
+    llm_setup: dict, mode: str, provider_value: str, interactive_slug: str
 ) -> None:
-    """A fleet-wide Codex/Gemini/Kimi mode must not capture Intake/Secretary —
-    they have no V1 support on those providers, so the resolver keeps them
-    on the legacy Anthropic path (the completeness-drill gap: previously
-    they resolved to the unsupported provider and the spawn guard left both
-    chats refusing to start after a one-click mode switch)."""
+    """2026-09-17, operator directive: the selected provider powers ALL
+    agents. A fleet-wide Codex/Gemini/Kimi mode now CAPTURES Intake/
+    Secretary (the provider-generic live driver serves them); the resolver
+    must route them onto the mode's provider, never exempt them back to
+    Anthropic."""
     svc = llm_setup["svc"]
     await svc.apply_mode(mode=mode)
 
@@ -990,7 +1059,7 @@ async def test_interactive_agents_exempt_from_delivery_only_global_mode(
     assert await svc.derive_mode() == mode
 
     route = await svc.resolve_for_agent(interactive_slug)
-    assert route.provider_type == ModelProvider.ANTHROPIC
+    assert route.provider_type.value == provider_value
 
 
 @pytest.mark.asyncio

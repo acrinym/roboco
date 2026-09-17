@@ -332,6 +332,8 @@ x-orchestrator-volumes: &orchestrator-volumes
   - ${ROBOCO_DATA_DIR:-./data}/gemini-usage:/data/gemini-usage
   # Per-agent KIMI usage capture — same shape as grok/codex/gemini-usage.
   - ${ROBOCO_DATA_DIR:-./data}/kimi-usage:/data/kimi-usage
+  # Per-agent HUMMIN usage capture — same shape as grok/codex/gemini/kimi-usage.
+  - ${ROBOCO_DATA_DIR:-./data}/hummin-usage:/data/hummin-usage
   # Persistent logs — survive `docker compose down/up`. Orchestrator and
   # each spawned agent write structured logs here so we can audit past
   # runs instead of relying on ephemeral `docker logs`.
@@ -427,7 +429,7 @@ services:
       BACKUP_MIRROR_DIR: ${ROBOCO_BACKUP_MIRROR_DIR:+/backups-mirror}
     entrypoint: ["/bin/bash", "/scripts/backup-entrypoint.sh"]
     volumes:
-      - ./docker/scripts/backup-entrypoint.sh:/scripts/backup-entrypoint.sh:ro
+      - ./docker/scripts/entrypoints/backup-entrypoint.sh:/scripts/backup-entrypoint.sh:ro
       - ${ROBOCO_DATA_DIR:-./data}/backups:/backups
       # Unarmed default deliberately re-mounts the primary backups dir (it
       # already exists, so no stray root-owned dir is auto-created) — the
@@ -847,6 +849,25 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent Hummin Image Builder (GLM family via the GLM-native hummin CLI).
+  # One-shot delivery roles only (V1) — no interactive prompter/secretary
+  # variant exists, contrast the Grok images above. hummin has no MCP client,
+  # so the RoboCo gateway is unreachable from this image in V1 (see
+  # roboco.llm.providers.hummin).
+  # ==========================================================================
+  agent-hummin-image:
+    build:
+      context: .
+      dockerfile: docker/agent-hummin.Dockerfile
+      additional_contexts:
+        roboco-agent-base: "service:agent-base-image"
+    image: roboco-agent-hummin
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent hummin image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Sandbox PG Image Builder (kitchen-sink postgres for parameterized dev DBs)
   # Only pulled by the provisioner when a venture requests pg extensions; bare
   # sandboxes stay on the light upstream postgres image. See
@@ -892,6 +913,12 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL for spawned containers (MCP servers + the live
+      # intake/secretary relay). Per-color: a spawned container must resolve
+      # ITS OWN generation's dispatcher over the shared network (the old
+      # non-color name died with the blue-green rename, 2026-09-17). Never
+      # loopback here (2026-09-06 incident: it flows to every agent).
+      ROBOCO_API_URL: http://roboco-dispatcher-blue:8000
       ROBOCO_ROLE: api
     volumes: *orchestrator-volumes
     healthcheck:
@@ -932,6 +959,8 @@ services:
       - "127.0.0.1:8001:8000"
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL, green's own dispatcher (see orchestrator-blue).
+      ROBOCO_API_URL: http://roboco-dispatcher-green:8000
       ROBOCO_ROLE: api
     volumes: *orchestrator-volumes
     healthcheck:
@@ -972,6 +1001,8 @@ services:
       - render
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL, blue's own dispatcher (see orchestrator-blue).
+      ROBOCO_API_URL: http://roboco-dispatcher-blue:8000
       ROBOCO_ROLE: dispatcher
     volumes: *orchestrator-volumes
     healthcheck:
@@ -996,6 +1027,8 @@ services:
       - render
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL, green's own dispatcher (see orchestrator-blue).
+      ROBOCO_API_URL: http://roboco-dispatcher-green:8000
       ROBOCO_ROLE: dispatcher
     volumes: *orchestrator-volumes
     healthcheck:
@@ -1126,7 +1159,13 @@ services:
       NGINX_ENVSUBST_FILTER: "^ROBOCO_"
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/templates/default.conf.template:ro
-      - ./front/active-upstreams.conf:/etc/nginx/active-upstreams.conf:ro
+      # The active-color include is mounted via its DIRECTORY, not as a file
+      # bind: a file bind pins the inode, so a host-side rewrite (or the
+      # deploy script's atomic tmp+mv swap) never reaches the running
+      # container and nginx keeps testing/serving the PREVIOUS color
+      # (2026-09-17 green flip: "host not found in upstream
+      # roboco-panel-blue" after the include already said green).
+      - ./front:/etc/nginx/front:ro
     # NO depends_on: the blue/green services are profile-gated, and nginx
     # must run for BOTH colors. Startup ordering is the deploy script's job
     # (it writes the include and starts front last); on a cold host reboot

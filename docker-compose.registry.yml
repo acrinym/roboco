@@ -356,7 +356,7 @@ services:
       BACKUP_MIRROR_DIR: ${ROBOCO_BACKUP_MIRROR_DIR:+/backups-mirror}
     entrypoint: ["/bin/bash", "/scripts/backup-entrypoint.sh"]
     volumes:
-      - ./docker/scripts/backup-entrypoint.sh:/scripts/backup-entrypoint.sh:ro
+      - ./docker/scripts/entrypoints/backup-entrypoint.sh:/scripts/backup-entrypoint.sh:ro
       - ${ROBOCO_DATA_DIR:-./data}/backups:/backups
       # Unarmed default deliberately re-mounts the primary backups dir (it
       # already exists, so no stray root-owned dir is auto-created) — the
@@ -551,6 +551,50 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-openrouter image present'"]
     restart: "no"
 
+  # Interactive live-chat images (intake/secretary on the routed provider).
+  # Build FROM the delivery images above (which is why hummin/nebius gained
+  # their own entries in this file in the same change - the live images' FROM
+  # must be published too).
+  agent-hummin-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-hummin:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-hummin image present'"]
+    restart: "no"
+
+  agent-nebius-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-nebius:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-nebius image present'"]
+    restart: "no"
+
+  agent-hummin-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-hummin-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-hummin-live image present'"]
+    restart: "no"
+
+  agent-codex-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-codex-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-codex-live image present'"]
+    restart: "no"
+
+  agent-gemini-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-gemini-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-gemini-live image present'"]
+    restart: "no"
+
+  agent-kimi-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-kimi-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-kimi-live image present'"]
+    restart: "no"
+
+  agent-openrouter-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-openrouter-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-openrouter-live image present'"]
+    restart: "no"
+
+  agent-nebius-live-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-nebius-live:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-nebius-live image present'"]
+    restart: "no"
+
   # Sandbox PG (kitchen-sink) — pulled by the provisioner when a venture opts
   # into pg extensions. Bare sandboxes use the upstream postgres image, so this
   # is only needed by extension-using projects.
@@ -641,6 +685,10 @@ services:
       - render
     environment:
       <<: *orchestrator-env
+      # Agent-facing API URL handed to every spawned agent's MCP config and
+      # the interactive relay. The singular (non-blue-green) name here; NEVER
+      # loopback (2026-09-06 incident, see above).
+      ROBOCO_API_URL: http://roboco-orchestrator:8000
       ROBOCO_ROLE: dispatcher
     volumes: *orchestrator-volumes
     healthcheck:
