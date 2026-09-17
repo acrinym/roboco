@@ -16,5 +16,7 @@ LABEL description="hummin interactive live chat (intake + secretary, generic dri
 # The in-container receiver the orchestrator delivers turns to.
 EXPOSE 9000
 
+COPY docker/scripts/entrypoints/hummin-live-entrypoint.sh /app/scripts/entrypoints/hummin-live-entrypoint.sh
+
 # Override the one-shot entrypoint: render config, then the generic driver.
 ENTRYPOINT ["/app/scripts/entrypoints/hummin-live-entrypoint.sh"]

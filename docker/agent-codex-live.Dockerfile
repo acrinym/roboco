@@ -16,5 +16,7 @@ LABEL description="codex interactive live chat (intake + secretary, generic driv
 # The in-container receiver the orchestrator delivers turns to.
 EXPOSE 9000
 
+COPY docker/scripts/entrypoints/codex-live-entrypoint.sh /app/scripts/entrypoints/codex-live-entrypoint.sh
+
 # Override the one-shot entrypoint: render config, then the generic driver.
 ENTRYPOINT ["/app/scripts/entrypoints/codex-live-entrypoint.sh"]

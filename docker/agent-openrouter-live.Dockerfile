@@ -16,5 +16,7 @@ LABEL description="openrouter interactive live chat (intake + secretary, generic
 # The in-container receiver the orchestrator delivers turns to.
 EXPOSE 9000
 
+COPY docker/scripts/entrypoints/openrouter-live-entrypoint.sh /app/scripts/entrypoints/openrouter-live-entrypoint.sh
+
 # Override the one-shot entrypoint: render config, then the generic driver.
 ENTRYPOINT ["/app/scripts/entrypoints/openrouter-live-entrypoint.sh"]
