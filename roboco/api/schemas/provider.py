@@ -106,6 +106,42 @@ class SetOpenRouterKeyRequest(BaseModel):
     api_key: str = Field(default="")
 
 
+class ZaiKeyStatus(BaseModel):
+    """Whether the Z.ai provider has a stored key."""
+
+    has_key: bool
+    enabled: bool
+
+
+class SetZaiKeyRequest(BaseModel):
+    """Set or clear the Z.ai API key.
+
+    Pass an empty string to clear. Pass a non-empty string to save
+    (encrypted with Fernet) and mark the Z.ai provider enabled.
+    Used against https://api.z.ai/api/anthropic.
+    """
+
+    api_key: str = Field(default="")
+
+
+class HumminKeyStatus(BaseModel):
+    """Whether the hummin provider has a stored key."""
+
+    has_key: bool
+    enabled: bool
+
+
+class SetHumminKeyRequest(BaseModel):
+    """Set or clear the hummin provider's Z.ai key (the GLM Coding Plan
+    credential, injected as ZAI_API_KEY at spawn).
+
+    Pass an empty string to clear. Pass a non-empty string to save
+    (encrypted with Fernet) and mark the hummin provider enabled.
+    """
+
+    api_key: str = Field(default="")
+
+
 class OpenRouterModelEntry(BaseModel):
     """One model available on OpenRouter's live catalog.
 
@@ -114,7 +150,9 @@ class OpenRouterModelEntry(BaseModel):
     name from OpenRouter. ``context_length`` is the max context in tokens.
     ``prompt_price`` / ``completion_price`` are the per-token USD rates as
     floats (converted from OpenRouter's string rates) for the UI's pricing
-    display.
+    display. Shared with the Nebius model search (the OpenAI-compatible
+    Token Factory list carries the same fields, mostly absent, so the same
+    nullable shape serves both).
     """
 
     id: str
@@ -122,6 +160,29 @@ class OpenRouterModelEntry(BaseModel):
     context_length: int | None = None
     prompt_price: float | None = None
     completion_price: float | None = None
+
+
+# =============================================================================
+# NEBIUS API KEY
+# =============================================================================
+
+
+class NebiusKeyStatus(BaseModel):
+    """Whether the Nebius provider has a stored key."""
+
+    has_key: bool
+    enabled: bool
+
+
+class SetNebiusKeyRequest(BaseModel):
+    """Set or clear the Nebius Token Factory API key.
+
+    Pass an empty string to clear. Pass a non-empty string to save
+    (encrypted with Fernet) and mark the Nebius provider enabled.
+    Used against https://api.tokenfactory.nebius.com/v1.
+    """
+
+    api_key: str = Field(default="")
 
 
 # =============================================================================
@@ -240,6 +301,14 @@ class ApplyModeRequest(BaseModel):
       provider_type_override since OpenRouter models are not in the static
       catalog. Requires the OpenRouter API key to be set first (PUT
       /providers/openrouter-key).
+    - mode="zai": clear every assignment; force-enable the ZAI provider;
+      set GLOBAL default to `default_model` (default glm-5.3-flash).
+      Requires the Z.ai key (PUT /providers/zai-key).
+    - mode="hummin": clear every assignment; force-enable the HUMMIN
+      provider; set GLOBAL default to `default_model` (default
+      settings.hummin_cli_model, a GLM id). No key check at mode-apply time
+      (the openrouter precedent — the spawn-time preflight is the gate:
+      a missing ZAI_API_KEY exits the container 78 and parks the provider).
     - mode="mix": clear existing per-agent pins; upsert the `per_agent`
       map verbatim. Role + GLOBAL rows are left untouched so the user can
       layer with an existing partial setup. Self-hosted model names in
@@ -261,6 +330,9 @@ class ApplyModeRequest(BaseModel):
         "gemini",
         "kimi",
         "openrouter",
+        "nebius",
+        "zai",
+        "hummin",
         "ollama",
         "mix",
         "self_hosted",
@@ -280,6 +352,9 @@ class ModeResponse(BaseModel):
         "gemini",
         "kimi",
         "openrouter",
+        "nebius",
+        "zai",
+        "hummin",
         "ollama",
         "mix",
         "self_hosted",
@@ -355,6 +430,9 @@ class RoutingPresetApplyResponse(BaseModel):
         "gemini",
         "kimi",
         "openrouter",
+        "nebius",
+        "zai",
+        "hummin",
         "ollama",
         "mix",
         "self_hosted",

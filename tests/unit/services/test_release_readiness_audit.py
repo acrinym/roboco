@@ -11,19 +11,26 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
+from roboco.foundation import identity
 from roboco.services.release_readiness import (
     CommitInfo,
     ReleaseReadinessReport,
     ReleaseRepoSnapshot,
+    _actual_agent_count,
     assess,
     gather_snapshot,
 )
 
+if TYPE_CHECKING:
+    import pytest
+
 _TODAY = "2026-06-25"
 _DECLARED = 25
 _DRIFTED = 26
+_SYNTHETIC_SEAT_COUNT = 2
 
 
 def _snap(**overrides: Any) -> ReleaseRepoSnapshot:
@@ -94,6 +101,29 @@ def test_bump_plan_is_the_canonical_set() -> None:
 def test_stale_agent_count_is_docs_drift_gap() -> None:
     snap = _snap(declared_agent_count=_DECLARED, actual_agent_count=_DRIFTED)
     assert "docs_drift" in _categories(assess(snap, today=_TODAY))
+
+
+def test_actual_agent_count_excludes_shared_seats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared overflow reviewer is a hand, not a seat (CEO ruling,
+    2026-09-17): the headcount counts seats, not registry rows."""
+
+    def _row(role: str) -> Any:
+        return SimpleNamespace(role=SimpleNamespace(value=role))
+
+    monkeypatch.setattr(
+        identity,
+        "AGENTS",
+        {
+            "system": _row("system"),
+            "ceo": _row("ceo"),
+            "be-dev-1": _row("developer"),
+            "be-pr-reviewer": _row("pr_reviewer"),
+            "cell-pr-reviewer-2": _row("pr_reviewer"),
+        },
+    )
+    assert _actual_agent_count() == _SYNTHETIC_SEAT_COUNT
 
 
 def test_stale_verb_tables_is_docs_drift_gap() -> None:

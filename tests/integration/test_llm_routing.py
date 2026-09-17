@@ -11,7 +11,11 @@ from roboco.db.tables import ProviderConfigTable
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.services.base import NotFoundError
-from roboco.services.llm import ModelRoutingService, get_model_routing_service
+from roboco.services.llm import (
+    _HUMMIN_ROLE_TIERS,
+    ModelRoutingService,
+    get_model_routing_service,
+)
 from roboco.services.provider import ProviderService, ProviderUpdate
 from roboco.utils.crypto import EncryptionError
 
@@ -75,15 +79,32 @@ async def llm_setup(
         type=ModelProvider.KIMI,
         enabled=True,
     )
-    # Mirrors migration 094_seed_openrouter_provider's contract: enabled=False
-    # at seed time (key-gated, like GROK) — no base_url, no key until the
+    # Mirrors migration 096_seed_openrouter_provider's contract: enabled=False
+    # at seed time (key-gated, like GROK) - no base_url, no key until the
     # operator sets one via set_openrouter_api_key.
     openrouter = ProviderConfigTable(
         name="openrouter-test",
         type=ModelProvider.OPENROUTER,
         enabled=False,
     )
-    db_session.add_all([anthropic, grok, ollama, openai, gemini, kimi, openrouter])
+    # Mirrors migration 100_seed_nebius_provider's contract: enabled=False at
+    # seed time (key-gated, like GROK/OPENROUTER) - no base_url, no key until
+    # the operator sets one via set_nebius_api_key.
+    nebius = ProviderConfigTable(
+        name="nebius-test",
+        type=ModelProvider.NEBIUS,
+        enabled=False,
+    )
+    # Mirrors migration 102_seed_hummin_provider's contract: enabled=True
+    # from birth (spawn-time key check is the gate, not the row).
+    hummin = ProviderConfigTable(
+        name="hummin-test",
+        type=ModelProvider.HUMMIN,
+        enabled=True,
+    )
+    db_session.add_all(
+        [anthropic, grok, ollama, openai, gemini, kimi, openrouter, nebius, hummin]
+    )
     await db_session.flush()
     yield {"svc": ModelRoutingService(db_session)}
 
@@ -379,6 +400,61 @@ async def test_apply_mode_grok_enables_grok_provider(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_mode_hummin_seeds_role_tiers(llm_setup: dict) -> None:
+    """apply_mode('hummin') seeds the oversight/delivery role split on top of
+    the GLOBAL default: board/reviewer/main-PM roles on the high-thinking
+    flash variant, delivery roles on the low-thinking flash variant. Idempotent
+    on re-apply; AGENT_SLUG pins survive untouched."""
+    svc = llm_setup["svc"]
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name="glm-5.3-flash",
+    )
+    await svc.apply_mode(mode="hummin")
+    await svc.apply_mode(mode="hummin")  # idempotent re-apply
+
+    assignments = await svc.list_assignments()
+    by_key = {(a.scope, a.scope_value): a.model_name for a in assignments}
+    assert by_key[(AssignmentScope.GLOBAL, None)] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "auditor")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "product_owner")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "head_marketing")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "pr_reviewer")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "main_pm")] == "glm-5.3-flash:high"
+    assert by_key[(AssignmentScope.ROLE, "developer")] == "glm-5.3-flash:low"
+    assert by_key[(AssignmentScope.ROLE, "qa")] == "glm-5.3-flash:low"
+    assert by_key[(AssignmentScope.ROLE, "documenter")] == "glm-5.3-flash:low"
+    assert by_key[(AssignmentScope.ROLE, "cell_pm")] == "glm-5.3-flash:low"
+    # Re-apply must upsert, not duplicate.
+    role_rows = [a for a in assignments if a.scope == AssignmentScope.ROLE]
+    assert len(role_rows) == len(_HUMMIN_ROLE_TIERS)
+    # Per-agent pins are outside mode state.
+    assert by_key[(AssignmentScope.AGENT_SLUG, "be-dev-1")] == "glm-5.3-flash"
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_hummin_enables_provider(llm_setup: dict) -> None:
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    hummin = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.HUMMIN
+    )
+    await provider_svc.update_provider(
+        cast("UUID", hummin.id), ProviderUpdate(enabled=False)
+    )
+    await svc.session.flush()
+
+    await svc.apply_mode(mode="hummin")
+
+    refetched = await provider_svc.get_provider(cast("UUID", hummin.id))
+    assert refetched is not None
+    assert refetched.enabled is True
+
+
+@pytest.mark.asyncio
 async def test_apply_mode_codex_sets_global(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     await svc.apply_mode(mode="codex")
@@ -570,6 +646,94 @@ async def test_apply_mode_openrouter_end_to_end_reachable(llm_setup: dict) -> No
 
 
 @pytest.mark.asyncio
+async def test_apply_mode_nebius_sets_global(llm_setup: dict) -> None:
+    """apply_mode('nebius') wipes assignments and sets a GLOBAL default
+    to the Nebius model via provider_type_override (Token Factory models
+    are NOT in the static catalog)."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="nebius")
+    assignments = await svc.list_assignments()
+    assert len(assignments) == 1
+    assert assignments[0].scope == AssignmentScope.GLOBAL
+    assert assignments[0].model_name == "nvidia/nemotron-3-super-120b-a12b"
+    assert assignments[0].provider.type == ModelProvider.NEBIUS
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_nebius_custom_model(llm_setup: dict) -> None:
+    """apply_mode('nebius', default_model=X) stores X directly via
+    provider_type_override - no catalog lookup, no ValueError."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="nebius", default_model="deepseek-ai/DeepSeek-V4")
+    assignments = await svc.list_assignments()
+    assert assignments[0].model_name == "deepseek-ai/DeepSeek-V4"
+    assert assignments[0].provider.type == ModelProvider.NEBIUS
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_nebius_enables_provider(llm_setup: dict) -> None:
+    """apply_mode('nebius') force-enables the NEBIUS row -
+    belt-and-suspenders against a row disabled by a key clear."""
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    nebius = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.NEBIUS
+    )
+    assert nebius.enabled is False  # seeded disabled in fixture
+    await svc.apply_mode(mode="nebius")
+    refetched = await provider_svc.get_provider(cast("UUID", nebius.id))
+    assert refetched is not None
+    assert refetched.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_nebius_when_only_nebius_global(
+    llm_setup: dict,
+) -> None:
+    """A pure-NEBIUS global assignment reports "nebius", not the
+    catch-all "mix" (the original derive_mode returned for any single
+    GLOBAL row it did not know)."""
+    svc = llm_setup["svc"]
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL,
+        scope_value=None,
+        model_name="nvidia/nemotron-3-super-120b-a12b",
+        provider_type_override=ModelProvider.NEBIUS,
+    )
+    assert await svc.derive_mode() == "nebius"
+
+
+@pytest.mark.asyncio
+async def test_set_nebius_api_key_encrypts_and_enables(
+    llm_setup: dict,
+) -> None:
+    """set_nebius_api_key encrypts the key and enables the provider row,
+    mirroring set_openrouter_api_key. Empty string clears + disables."""
+    svc = llm_setup["svc"]
+    provider = await svc.set_nebius_api_key("nebius-test-key-12345")
+    assert provider.auth_token_encrypted is not None
+    assert provider.enabled is True
+    # Key never stored in plaintext
+    assert "nebius-test-key-12345" not in str(provider.auth_token_encrypted)
+
+    # Clear
+    provider = await svc.set_nebius_api_key("")
+    assert provider.auth_token_encrypted is None
+    assert provider.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_nebius_end_to_end_reachable(llm_setup: dict) -> None:
+    """The full reachability chain: apply_mode -> derive_mode reflects it ->
+    resolve_for_agent routes to the Nebius provider."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="nebius")
+    assert await svc.derive_mode() == "nebius"
+
+
+@pytest.mark.asyncio
 async def test_apply_mode_mix_requires_per_agent(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     with pytest.raises(ValueError, match="requires a per_agent"):
@@ -610,6 +774,27 @@ async def test_apply_mode_mix_writes_overrides(llm_setup: dict) -> None:
     assert "be-dev-2" in slugs
     # Empty model_name skipped.
     assert "skip-me" not in slugs
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_mix_pins_nebius_catalog_model(llm_setup: dict) -> None:
+    """The live-verified Nemotron ids are catalog members, so a Mix-mode
+    per-agent pin resolves to the NEBIUS provider row (auto-enabled, same
+    as the openrouter precedent) instead of being rejected as an unknown
+    model. This is the routing half of the Nebius levels-parity batch."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(
+        mode="mix",
+        per_agent={"be-dev-1": "nvidia/nemotron-3-super-120b-a12b"},
+    )
+    rows = await svc.list_assignments()
+    pin = next(
+        r
+        for r in rows
+        if r.scope == AssignmentScope.AGENT_SLUG and r.scope_value == "be-dev-1"
+    )
+    assert pin.model_name == "nvidia/nemotron-3-super-120b-a12b"
+    assert pin.provider.type == ModelProvider.NEBIUS
 
 
 @pytest.mark.asyncio
@@ -854,16 +1039,19 @@ async def test_apply_mode_codex_end_to_end_reachable(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["codex", "gemini", "kimi"])
+@pytest.mark.parametrize(
+    "mode,provider_value",
+    [("codex", "openai"), ("gemini", "gemini"), ("kimi", "kimi")],
+)
 @pytest.mark.parametrize("interactive_slug", ["intake-1", "secretary-1"])
-async def test_interactive_agents_exempt_from_delivery_only_global_mode(
-    llm_setup: dict, mode: str, interactive_slug: str
+async def test_interactive_agents_follow_the_fleet_mode(
+    llm_setup: dict, mode: str, provider_value: str, interactive_slug: str
 ) -> None:
-    """A fleet-wide Codex/Gemini/Kimi mode must not capture Intake/Secretary —
-    they have no V1 support on those providers, so the resolver keeps them
-    on the legacy Anthropic path (the completeness-drill gap: previously
-    they resolved to the unsupported provider and the spawn guard left both
-    chats refusing to start after a one-click mode switch)."""
+    """2026-09-17, operator directive: the selected provider powers ALL
+    agents. A fleet-wide Codex/Gemini/Kimi mode now CAPTURES Intake/
+    Secretary (the provider-generic live driver serves them); the resolver
+    must route them onto the mode's provider, never exempt them back to
+    Anthropic."""
     svc = llm_setup["svc"]
     await svc.apply_mode(mode=mode)
 
@@ -871,7 +1059,7 @@ async def test_interactive_agents_exempt_from_delivery_only_global_mode(
     assert await svc.derive_mode() == mode
 
     route = await svc.resolve_for_agent(interactive_slug)
-    assert route.provider_type == ModelProvider.ANTHROPIC
+    assert route.provider_type.value == provider_value
 
 
 @pytest.mark.asyncio

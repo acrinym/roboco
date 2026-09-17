@@ -10,7 +10,7 @@ Contributions require a signed **Contributor License Agreement** (`CLA.md`), aut
 
 ## Project Overview
 
-**RoboCo** is an AI Agentic Company - a virtual organization of 26 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
+**RoboCo** is an AI Agentic Company - a virtual organization of 25 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
 
 ```
 CEO (Renzo - Human)
@@ -90,7 +90,7 @@ Agents never call the API or per-domain MCP tools directly. They go through two 
 
 ## Agent Providers
 
-Backends are pluggable (`roboco/llm/providers/`, `ProviderRegistry` keyed by `ModelProvider`): Claude Code (default), Grok, Gemini, Codex, Kimi. Routing resolves `(provider, model)` per agent at spawn with precedence `AGENT_SLUG > ROLE:complexity > ROLE > GLOBAL`, and a capability floor upgrades any below-floor Anthropic assignment to Sonnet because Haiku cannot emit the structured envelopes. Per-runtime auth and tool-scoping gotchas: `.claude/rules/agent-providers.md`.
+Backends are pluggable (`roboco/llm/providers/`, `ProviderRegistry` keyed by `ModelProvider`): Claude Code (default), Grok, Gemini, Codex, Kimi, OpenRouter, Nebius, Hummin. Routing resolves `(provider, model)` per agent at spawn with precedence `AGENT_SLUG > ROLE:complexity > ROLE > GLOBAL`, and a capability floor upgrades any below-floor Anthropic assignment to Sonnet because Haiku cannot emit the structured envelopes. Per-runtime auth and tool-scoping gotchas: `.claude/rules/agent-providers.md`.
 
 ## Feature Flags
 

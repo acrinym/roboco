@@ -21,7 +21,9 @@ from roboco.api.schemas.provider import (
     ComplexityOverrideRequest,
     ComplexityOverrideResponse,
     GrokKeyStatus,
+    HumminKeyStatus,
     ModeResponse,
+    NebiusKeyStatus,
     OllamaKeyStatus,
     OpenRouterKeyStatus,
     OpenRouterModelEntry,
@@ -33,8 +35,12 @@ from roboco.api.schemas.provider import (
     SelfHostedModelEntry,
     SelfHostedTestResponse,
     SetGrokKeyRequest,
+    SetHumminKeyRequest,
+    SetNebiusKeyRequest,
     SetOllamaKeyRequest,
     SetOpenRouterKeyRequest,
+    SetZaiKeyRequest,
+    ZaiKeyStatus,
     assignment_to_response,
     routing_preset_to_summary,
 )
@@ -51,6 +57,7 @@ from roboco.security import guard_deco
 from roboco.services.base import NotFoundError
 from roboco.services.llm import (
     get_model_routing_service,
+    probe_nebius_models,
     probe_ollama_tags,
     probe_openrouter_models,
 )
@@ -274,6 +281,121 @@ async def set_openrouter_key(
 
 
 # =============================================================================
+# ZAI API KEY
+# =============================================================================
+
+
+@router.get("/zai-key", response_model=ZaiKeyStatus)
+async def get_zai_key_status(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> ZaiKeyStatus:
+    """Return whether the Z.ai key is set + enabled."""
+    require_pm_or_above(agent.role, "view the Z.ai key status")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    zai = next((p for p in providers if p.type == ModelProvider.ZAI), None)
+    if zai is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Z.ai provider not seeded. Run alembic upgrade head.",
+        )
+    return ZaiKeyStatus(
+        has_key=bool(zai.auth_token_encrypted),
+        enabled=zai.enabled,
+    )
+
+
+@router.put("/zai-key", response_model=ZaiKeyStatus)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
+async def set_zai_key(
+    data: SetZaiKeyRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> ZaiKeyStatus:
+    """Set or clear the Z.ai API key.
+
+    Empty string → clears and disables the provider. Any other value →
+    Fernet-encrypts + marks enabled. Used against the Anthropic-compatible
+    endpoint https://api.z.ai/api/anthropic.
+    """
+    require_pm_or_above(agent.role, "set the Z.ai key")
+    routing = get_model_routing_service(db)
+    try:
+        provider = await routing.set_zai_api_key(data.api_key)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+    return ZaiKeyStatus(
+        has_key=bool(provider.auth_token_encrypted),
+        enabled=provider.enabled,
+    )
+
+
+# =============================================================================
+# HUMMIN (GLM Coding Plan) API KEY
+# =============================================================================
+
+
+@router.get("/hummin-key", response_model=HumminKeyStatus)
+async def get_hummin_key_status(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> HumminKeyStatus:
+    """Return whether the hummin provider's Z.ai key is set + enabled."""
+    require_pm_or_above(agent.role, "view the hummin key status")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    hummin = next((p for p in providers if p.type == ModelProvider.HUMMIN), None)
+    if hummin is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="hummin provider not seeded. Run alembic upgrade head.",
+        )
+    return HumminKeyStatus(
+        has_key=bool(hummin.auth_token_encrypted),
+        enabled=hummin.enabled,
+    )
+
+
+@router.put("/hummin-key", response_model=HumminKeyStatus)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
+async def set_hummin_key(
+    data: SetHumminKeyRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> HumminKeyStatus:
+    """Set or clear the hummin provider's Z.ai key.
+
+    Empty string → clears and disables the provider. Any other value →
+    Fernet-encrypts + marks enabled. The key is the operator's Z.ai key for
+    the GLM Coding Plan; it rides to the container as ZAI_API_KEY at spawn
+    (see roboco.llm.providers.hummin).
+    """
+    require_pm_or_above(agent.role, "set the hummin key")
+    routing = get_model_routing_service(db)
+    try:
+        provider = await routing.set_hummin_api_key(data.api_key)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+    return HumminKeyStatus(
+        has_key=bool(provider.auth_token_encrypted),
+        enabled=provider.enabled,
+    )
+
+
+# =============================================================================
 # OPENROUTER MODEL SEARCH (live catalog proxy)
 # =============================================================================
 
@@ -333,6 +455,130 @@ async def get_openrouter_models(
                 context_length=m.get("context_length"),
                 prompt_price=prompt_price,
                 completion_price=completion_price,
+            )
+        )
+    return entries
+
+
+# =============================================================================
+# NEBIUS API KEY
+# =============================================================================
+
+
+@router.get("/nebius-key", response_model=NebiusKeyStatus)
+async def get_nebius_key_status(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> NebiusKeyStatus:
+    """Return whether the Nebius key is set + enabled."""
+    require_pm_or_above(agent.role, "view the Nebius key status")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    nebius = next(
+        (p for p in providers if p.type == ModelProvider.NEBIUS),
+        None,
+    )
+    if nebius is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Nebius provider not seeded. Run alembic upgrade head.",
+        )
+    return NebiusKeyStatus(
+        has_key=bool(nebius.auth_token_encrypted),
+        enabled=nebius.enabled,
+    )
+
+
+@router.put("/nebius-key", response_model=NebiusKeyStatus)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
+async def set_nebius_key(
+    data: SetNebiusKeyRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> NebiusKeyStatus:
+    """Set or clear the Nebius Token Factory API key.
+
+    Empty string → clears and disables the provider. Any other value →
+    Fernet-encrypts + marks enabled. Used against
+    https://api.tokenfactory.nebius.com/v1.
+    """
+    require_pm_or_above(agent.role, "set the Nebius key")
+    routing = get_model_routing_service(db)
+    try:
+        provider = await routing.set_nebius_api_key(data.api_key)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+    return NebiusKeyStatus(
+        has_key=bool(provider.auth_token_encrypted),
+        enabled=provider.enabled,
+    )
+
+
+# =============================================================================
+# NEBIUS MODEL SEARCH (live catalog proxy)
+# =============================================================================
+
+
+@router.get("/nebius/models", response_model=list[OpenRouterModelEntry])
+async def get_nebius_models(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    q: str = "",
+) -> list[OpenRouterModelEntry]:
+    """Proxy a model search to Nebius Token Factory's live API.
+
+    Filtered by the ``q`` substring (case-insensitive match on model id /
+    name). Raises 400 if no Nebius API key is configured. The key is
+    decrypted server-side and never reaches the browser. Reuses the
+    OpenRouterModelEntry shape (the OpenAI-compatible list carries the same
+    fields, mostly absent, so the nullable shape serves both).
+    """
+    require_pm_or_above(agent.role, "search Nebius models")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    nebius = next(
+        (p for p in providers if p.type == ModelProvider.NEBIUS),
+        None,
+    )
+    if nebius is None or not nebius.auth_token_encrypted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Nebius API key is not configured. "
+                "Set it first via PUT /providers/nebius-key."
+            ),
+        )
+    api_key = await provider_svc.get_decrypted_token(require_uuid(nebius.id))
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Nebius API key is not configured. "
+                "Set it first via PUT /providers/nebius-key."
+            ),
+        )
+    models, error = await probe_nebius_models(api_key, query=q)
+    if error is not None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Nebius model search failed: {error}",
+        )
+    entries: list[OpenRouterModelEntry] = []
+    for m in models:
+        pricing = m.get("pricing") or {}
+        entries.append(
+            OpenRouterModelEntry(
+                id=m.get("id", ""),
+                name=m.get("name", ""),
+                context_length=m.get("context_length"),
+                prompt_price=safe_float(pricing.get("prompt")),
+                completion_price=safe_float(pricing.get("completion")),
             )
         )
     return entries

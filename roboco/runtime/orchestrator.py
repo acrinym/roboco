@@ -387,6 +387,9 @@ _RATE_LIMIT_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     ModelProvider.ANTHROPIC.value: _ANTHROPIC_RATE_LIMIT_MARKERS,
     ModelProvider.OLLAMA_CLOUD.value: _OLLAMA_RATE_LIMIT_MARKERS,
     ModelProvider.LOCAL.value: _LOCAL_RATE_LIMIT_MARKERS,
+    # ZAI rides the same Anthropic-protocol spawn as OLLAMA_CLOUD (Z.ai's
+    # Anthropic-compatible endpoint), so the same SDK retry lines apply.
+    ModelProvider.ZAI.value: _OLLAMA_RATE_LIMIT_MARKERS,
 }
 _OVERLOAD_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     ModelProvider.ANTHROPIC.value: _ANTHROPIC_OVERLOAD_MARKERS,
@@ -428,12 +431,10 @@ SECRETARY_AGENT_ID = "secretary-1"
 # providers (a fleet-wide mode switch keeps the chats on Anthropic); this
 # guard is the backstop for an EXPLICIT AGENT_SLUG pin, which is refused
 # loudly rather than silently overridden.
-_INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
-    ModelProvider.OPENAI,
-    ModelProvider.GEMINI,
-    ModelProvider.KIMI,
-    ModelProvider.OPENROUTER,
-)
+# RETIRED to empty (2026-09-17): every provider has an interactive path now
+# (see roboco/services/llm.py INTERACTIVE_UNSUPPORTED_PROVIDERS). The guard
+# below stays wired as the backstop for future delivery-only providers.
+_INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = ()
 
 
 def _reject_interactive_unsupported_provider(
@@ -572,7 +573,7 @@ _GROK_AUTH_RETRY_AFTER_S = 60.0
 
 # A one-shot Codex container exits with these SAME codes for the SAME reasons
 # (its entrypoint mirrors grok's exit-code convention — see
-# docker/scripts/codex-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# docker/scripts/entrypoints/codex-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
 # detected OpenAI rate-limit / quota error, 78 (EX_CONFIG) when the
 # codex_auth --check backstop finds the mounted ChatGPT-subscription token
 # missing/expired. Numeric reuse is fine — the checks are scoped by
@@ -621,7 +622,7 @@ KIMI_USAGE_DATA_DIR = os.environ.get("ROBOCO_KIMI_USAGE_DIR", "/data/kimi-usage"
 
 # A one-shot Kimi container exits with these SAME codes for the SAME reasons
 # (its entrypoint mirrors the codex/grok exit-code convention — see
-# docker/scripts/kimi-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# docker/scripts/entrypoints/kimi-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
 # detected Moonshot rate-limit/quota error, 78 (EX_CONFIG) when the
 # kimi_cli_config --check auth preflight finds the symlinked-in subscription
 # credential missing/expired. Numeric reuse is fine — the checks are scoped
@@ -644,14 +645,49 @@ OPENROUTER_USAGE_DATA_DIR = os.environ.get(
 )
 
 # A one-shot OpenRouter container exits with these SAME codes for the SAME
-# reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention —
-# see docker/scripts/openrouter-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention -
+# see docker/scripts/entrypoints/openrouter-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
 # detected OpenRouter rate-limit/quota error, 78 (EX_CONFIG) when the
 # openrouter_cli_config --check auth preflight finds OPENROUTER_API_KEY
-# missing (the Ollama shape — a static key, no expiry read). Scoped by
+# missing (the Ollama shape - a static key, no expiry read). Scoped by
 # provider_type (ModelProvider.OPENROUTER), never by exit code alone.
 _OPENROUTER_RATE_LIMIT_EXIT_CODE = 75
 _OPENROUTER_AUTH_EXIT_CODE = 78
+
+# In-orchestrator path where each NEBIUS agent's usage capture is visible
+# - the nebius analogue of OPENROUTER_USAGE_DATA_DIR (see there for the mount
+# shape). Nebius usage is captured from the opencode --format json stream
+# (see roboco.llm.providers.nebius_cli_usage).
+NEBIUS_USAGE_DATA_DIR = os.environ.get("ROBOCO_NEBIUS_USAGE_DIR", "/data/nebius-usage")
+
+# In-orchestrator path where each HUMMIN agent's usage capture is visible
+# - the hummin analogue of KIMI_USAGE_DATA_DIR (see there for the mount
+# shape). Hummin usage is scraped from the tee'd `--mode json` run log
+# (see roboco.llm.providers.hummin_cli_usage).
+HUMMIN_USAGE_DATA_DIR = os.environ.get("ROBOCO_HUMMIN_USAGE_DIR", "/data/hummin-usage")
+
+# A one-shot hummin container exits with these SAME codes for the SAME
+# reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention -
+# see docker/scripts/entrypoints/hummin-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# detected Z.ai rate-limit/quota error, 78 (EX_CONFIG) when the auth
+# preflight (hummin auth check --provider zai --json) finds the ZAI_API_KEY
+# missing/invalid. NOTE the hummin-specific trap: --mode json exits 0 even
+# when the assistant errored - the entrypoint branches on the sniff result,
+# never the raw exit code alone (see hummin_cli_sniff). Numeric reuse of the
+# shared 75/78 codes is fine - the checks are scoped by provider_type
+# (ModelProvider.HUMMIN), never by exit code alone.
+_HUMMIN_RATE_LIMIT_EXIT_CODE = 75
+_HUMMIN_AUTH_EXIT_CODE = 78
+
+# A one-shot Nebius container exits with these SAME codes for the SAME
+# reasons (its entrypoint mirrors the kimi/codex/grok exit-code convention -
+# see docker/scripts/entrypoints/nebius-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# detected Nebius rate-limit/quota error, 78 (EX_CONFIG) when the
+# nebius_cli_config --check auth preflight finds NEBIUS_API_KEY
+# missing (the Ollama shape - a static key, no expiry read). Scoped by
+# provider_type (ModelProvider.NEBIUS), never by exit code alone.
+_NEBIUS_RATE_LIMIT_EXIT_CODE = 75
+_NEBIUS_AUTH_EXIT_CODE = 78
 
 
 # =============================================================================
@@ -1626,6 +1662,22 @@ class AgentOrchestrator(
         )
         self._openrouter_auth_retry_after_s: float = getattr(
             settings, "openrouter_auth_retry_after_seconds", 60.0
+        )
+        # Configurable retry_after base for NEBIUS parks (the openrouter
+        # tunable pattern; the Settings fields land with the provider).
+        self._nebius_rate_limit_retry_after_s: float = (
+            settings.nebius_rate_limit_retry_after_seconds
+        )
+        self._nebius_auth_retry_after_s: float = (
+            settings.nebius_auth_retry_after_seconds
+        )
+        # Configurable retry_after base for HUMMIN parks (kimi's tunable
+        # pattern; the Settings fields land with the provider).
+        self._hummin_rate_limit_retry_after_s: float = (
+            settings.hummin_rate_limit_retry_after_seconds
+        )
+        self._hummin_auth_retry_after_s: float = (
+            settings.hummin_auth_retry_after_seconds
         )
 
     def _init_engine_loop_task_slots(self) -> None:

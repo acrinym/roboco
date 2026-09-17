@@ -36,7 +36,7 @@ OpenRouter provider support:
 - apply_mode('openrouter', ...) enables the OPENROUTER provider and
   sets a GLOBAL assignment to the given model id via
   provider_type_override (OpenRouter models are NOT in the static
-  MODEL_CATALOG — the catalog is live, searched on demand via
+  MODEL_CATALOG - the catalog is live, searched on demand via
   GET /providers/openrouter/models).
 - set_openrouter_api_key() Fernet-encrypts the API key on the
   provider row (mirrors set_grok_api_key). Empty string clears +
@@ -48,6 +48,56 @@ OpenRouter provider support:
   the cost-tiered complexity-override downgrade-only comparator
   treats them as the cheapest tier. See _apply_openrouter's
   docstring for the full caveat.
+
+Nebius provider support (the openrouter twin, against Nebius Token
+Factory's OpenAI-compatible endpoint):
+- derive_mode() returns 'nebius' when there is exactly one
+  GLOBAL assignment pointing to the NEBIUS provider.
+- apply_mode('nebius', ...) enables the NEBIUS provider and
+  sets a GLOBAL assignment to the given model id via
+  provider_type_override (Token Factory ids are also static-catalog
+  members now - see the levels-parity batch - while the full catalog
+  stays live, searched on demand via GET /providers/nebius/models).
+- set_nebius_api_key() Fernet-encrypts the API key on the
+  provider row (mirrors set_openrouter_api_key). Empty string clears +
+  disables; non-empty encrypts + enables.
+- Same cost-tier limitation as OpenRouter: no _PRICING rows, metered
+  usage.cost attribution, 0.0 list price - see _apply_nebius.
+
+ZAI provider support (Z.ai GLM family):
+- Z.ai speaks the Anthropic Messages API at
+  https://api.z.ai/api/anthropic, so ZAI agents run through the built-in
+  Claude Code spawn with ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
+  injected from the provider row (the OLLAMA_CLOUD shape, no dedicated
+  provider class).
+- derive_mode() returns 'zai' when there is exactly one GLOBAL
+  assignment pointing to the ZAI provider.
+- apply_mode('zai', ...) refuses to run without a saved key, then
+  enables the ZAI provider and sets a GLOBAL assignment to the given
+  model (default glm-5.3-flash).
+- set_zai_api_key() Fernet-encrypts the API key on the provider row
+  (mirrors set_ollama_api_key). Empty string clears + disables;
+  non-empty encrypts + enables.
+- Cost-tier limitation mirrors OpenRouter: no _PRICING rows, so
+  input_price_per_million returns 0.0 for any ZAI model.
+
+HUMMIN provider support (the GLM go-to, GLM-native hummin CLI):
+- The GLM catalog entries (glm-5.3, glm-5.3-flash, glm-5.3-highspeed)
+  re-pointed here from ZAI (2026-09-17): hummin runs GLM natively
+  (pi-harness fork, GLM Coding Plan endpoint) while the ZAI
+  Anthropic-protocol path stays enabled as a manual fallback (it keeps
+  its row + key endpoint; it simply has no static-catalog entries
+  anymore).
+- derive_mode() returns 'hummin' when there is exactly one GLOBAL
+  assignment pointing to the HUMMIN provider.
+- apply_mode('hummin', ...) force-enables the HUMMIN row (the
+  kimi/openrouter shape: the spawn-time key check is the gate — a
+  missing ZAI_API_KEY exits the container 78 at the auth preflight and
+  the orchestrator parks the provider) and sets a GLOBAL assignment to
+  the given model (default settings.hummin_cli_model).
+- set_hummin_api_key() Fernet-encrypts the Z.ai key on the provider row
+  (the set_zai_api_key twin). Empty string clears + disables; non-empty
+  encrypts + enables.
 """
 
 from __future__ import annotations
@@ -91,6 +141,26 @@ if TYPE_CHECKING:
 _OLLAMA_TAGS_TIMEOUT = 5.0  # seconds
 _log = structlog.get_logger(__name__)
 
+# Hummin (GLM) role tiers seeded by apply_mode('hummin') on top of the GLOBAL
+# default: (role, model_name). Thinking-heavy oversight roles ride the
+# high-thinking flash variant; mechanical delivery roles ride the low-thinking
+# flash variant. Roles not listed fall through to the GLOBAL default
+# (settings.hummin_cli_model). Prompter/secretary never land here, interactive
+# agents are exempt from the delivery-only provider (model_routing).
+_HUMMIN_ROLE_TIERS: tuple[tuple[str, str], ...] = (
+    # High-thinking tier: judgment / oversight
+    ("auditor", "glm-5.3-flash:high"),
+    ("product_owner", "glm-5.3-flash:high"),
+    ("head_marketing", "glm-5.3-flash:high"),
+    ("pr_reviewer", "glm-5.3-flash:high"),
+    ("main_pm", "glm-5.3-flash:high"),
+    # Low-thinking tier: mechanical delivery
+    ("developer", "glm-5.3-flash:low"),
+    ("qa", "glm-5.3-flash:low"),
+    ("documenter", "glm-5.3-flash:low"),
+    ("cell_pm", "glm-5.3-flash:low"),
+)
+
 # Cost-tiered seed applied by apply_mode('cost_tiered'): (role, complexity,
 # model_name). RETIRED to empty (2026-07-24): the one entry seeded
 # developer:low -> haiku, but haiku can't reliably emit the structured
@@ -108,13 +178,27 @@ _COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = ()
 # hits ruff's PLR0911 the moment a new provider is added, as GEMINI did).
 _SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
     ModelProvider,
-    Literal["grok", "codex", "gemini", "kimi", "openrouter", "ollama", "self_hosted"],
+    Literal[
+        "grok",
+        "codex",
+        "gemini",
+        "kimi",
+        "openrouter",
+        "nebius",
+        "zai",
+        "hummin",
+        "ollama",
+        "self_hosted",
+    ],
 ] = {
     ModelProvider.GROK: "grok",
     ModelProvider.OPENAI: "codex",
     ModelProvider.GEMINI: "gemini",
     ModelProvider.KIMI: "kimi",
     ModelProvider.OPENROUTER: "openrouter",
+    ModelProvider.NEBIUS: "nebius",
+    ModelProvider.ZAI: "zai",
+    ModelProvider.HUMMIN: "hummin",
     ModelProvider.OLLAMA_CLOUD: "ollama",
     ModelProvider.LOCAL: "self_hosted",
 }
@@ -205,6 +289,94 @@ async def probe_openrouter_models(
     return _filter_openrouter_models(raw_models, query.lower()), None
 
 
+_NEBIUS_MODELS_TIMEOUT = 10.0
+
+
+async def probe_nebius_models(
+    api_key: str, query: str = ""
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Fetch the model list from Nebius Token Factory's live API.
+
+    Hits ``{settings.nebius_base_url}/models`` with the bearer key and
+    filters by the optional ``query`` substring (case-insensitive match on
+    the model id / name). Returns ``(models, None)`` on success or
+    ``([], error_message)`` on any failure. Never raises - mirrors
+    ``probe_openrouter_models``.
+
+    Token Factory's list is the generic OpenAI-compatible ``GET /v1/models``
+    shape (``{"data": [{"id": ...}, ...]}``) - unlike OpenRouter it carries
+    NO capability metadata (no ``supported_parameters`` tool filter, no
+    pricing, usually no context length), so the only filter is the query
+    substring and the only field of substance is ``id``. Each returned dict
+    keeps the OpenRouter entry shape (``id`` / ``name`` / ``context_length``
+    / ``pricing``) with the absent fields defaulted, so the panel's model
+    picker renders it unchanged.
+    """
+    url = settings.nebius_base_url.rstrip("/") + "/models"
+    try:
+        async with httpx.AsyncClient(timeout=_NEBIUS_MODELS_TIMEOUT) as client:
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.TimeoutException:
+        return (
+            [],
+            f"Connection to Nebius timed out after {_NEBIUS_MODELS_TIMEOUT}s",
+        )
+    except httpx.ConnectError:
+        return [], "Could not connect to Nebius - service may be offline"
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        if status_code == 401:  # noqa: PLR2004
+            return [], "Nebius API key is invalid or expired"
+        return [], f"Nebius returned HTTP {status_code}"
+    except Exception as exc:
+        _log.error(
+            "Unexpected error probing Nebius models",
+            error=exc.__class__.__name__,
+        )
+        return [], "An unexpected error occurred while probing Nebius."
+
+    raw_models = data.get("data", []) if isinstance(data, dict) else []
+    return _filter_nebius_models(raw_models, query.lower()), None
+
+
+def _filter_nebius_models(
+    raw_models: list[Any], query_lower: str
+) -> list[dict[str, Any]]:
+    """Filter raw Nebius model dicts to query-matching entries.
+
+    Token Factory carries no capability metadata on the list endpoint, so
+    there is no tool-support filter (parity would be a lie); ``name`` falls
+    back to the id when absent, and ``context_length`` / ``pricing`` default
+    to None / {} to keep the OpenRouter entry shape.
+    """
+    models: list[dict[str, Any]] = []
+    for m in raw_models:
+        if not isinstance(m, dict):
+            continue
+        model_id = m.get("id", "")
+        name = m.get("name") or model_id
+        if (
+            query_lower
+            and query_lower not in model_id.lower()
+            and query_lower not in name.lower()
+        ):
+            continue
+        models.append(
+            {
+                "id": model_id,
+                "name": name,
+                "context_length": m.get("context_length"),
+                "pricing": m.get("pricing", {}),
+            }
+        )
+    return models
+
+
 def _filter_openrouter_models(
     raw_models: list[Any], query_lower: str
 ) -> list[dict[str, Any]]:
@@ -270,12 +442,13 @@ class _ResolvedAssignment:
 # silent override. The orchestrator imports these as the single source of
 # truth for that guard.
 INTERACTIVE_AGENT_SLUGS: tuple[str, ...] = ("intake-1", "secretary-1")
-INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
-    ModelProvider.OPENAI,
-    ModelProvider.GEMINI,
-    ModelProvider.KIMI,
-    ModelProvider.OPENROUTER,
-)
+# RETIRED to empty (2026-09-17, operator directive): the selected provider
+# powers ALL agents - interactive intake/secretary included. Every provider
+# now has an interactive path (anthropic SDK, grok CLI session, or the
+# provider-generic live driver via roboco.agent_sdk.live_main), so no
+# GLOBAL/ROLE row is ever exempted back to Anthropic. The constant stays so
+# the exemption machinery + parity guard remain wired for future providers.
+INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = ()
 
 
 # Capability floor: haiku-class models cannot reliably emit the structured
@@ -559,12 +732,18 @@ class ModelRoutingService(BaseService):
         # deliberately excluded — its enable state is gated on the xAI key
         # (set_grok_api_key), unlike LOCAL/Codex/Gemini/Kimi which have no key
         # to gate on (self-hosted's own base_url + mounted-subscription auth).
+        # OPENROUTER/NEBIUS/HUMMIN ARE key-gated but still auto-enabled here
+        # (the openrouter precedent): an explicit assignment is a deliberate
+        # operator choice, and the spawn-time key check (ProviderError /
+        # entrypoint exit 78 + park) is what actually catches a missing key.
         if provider_type_for_log in (
             ModelProvider.LOCAL,
             ModelProvider.GEMINI,
             ModelProvider.OPENAI,
             ModelProvider.KIMI,
             ModelProvider.OPENROUTER,
+            ModelProvider.NEBIUS,
+            ModelProvider.HUMMIN,
         ):
             provider_svc = ProviderService(self.session)
             await provider_svc.update_provider(
@@ -603,6 +782,9 @@ class ModelRoutingService(BaseService):
         "gemini",
         "kimi",
         "openrouter",
+        "nebius",
+        "zai",
+        "hummin",
         "ollama",
         "mix",
         "self_hosted",
@@ -617,6 +799,7 @@ class ModelRoutingService(BaseService):
           - only a global row, OPENAI       → "codex"
           - only a global row, GEMINI       → "gemini"
           - only a global row, KIMI         → "kimi"
+          - only a global row, NEBIUS       → "nebius"
           - anything else                   → "mix"
         """
         assignments = await self.list_assignments()
@@ -692,6 +875,71 @@ class ModelRoutingService(BaseService):
         )
         # Re-fetch for the caller.
         return await self._get_seeded_provider(ModelProvider.OPENROUTER)
+
+    async def set_nebius_api_key(self, api_key: str) -> ProviderConfigTable:
+        """Set / clear the Nebius Token Factory provider's API key.
+
+        Empty string clears + disables; a real key Fernet-encrypts + enables.
+        Operates on the single pre-seeded Nebius row - no provider
+        creation happens here. The key is a standard Nebius API key used
+        against https://api.tokenfactory.nebius.com/v1.
+        """
+        provider = await self._get_seeded_provider(ModelProvider.NEBIUS)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(provider.id),
+            ProviderUpdate(
+                auth_token=api_key if api_key else None,
+                clear_auth_token=not api_key,
+                enabled=bool(api_key),
+            ),
+        )
+        # Re-fetch for the caller.
+        return await self._get_seeded_provider(ModelProvider.NEBIUS)
+
+    async def set_zai_api_key(self, api_key: str) -> ProviderConfigTable:
+        """Set / clear the Z.ai provider's API key.
+
+        Empty string clears + disables; a real key Fernet-encrypts + enables.
+        Operates on the single pre-seeded Z.ai row (no provider creation
+        happens here. The key is a standard Z.ai API key used against the
+        Anthropic-compatible endpoint https://api.z.ai/api/anthropic
+        (injected as ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN at spawn).
+        """
+        provider = await self._get_seeded_provider(ModelProvider.ZAI)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(provider.id),
+            ProviderUpdate(
+                auth_token=api_key if api_key else None,
+                clear_auth_token=not api_key,
+                enabled=bool(api_key),
+            ),
+        )
+        # Re-fetch for the caller.
+        return await self._get_seeded_provider(ModelProvider.ZAI)
+
+    async def set_hummin_api_key(self, api_key: str) -> ProviderConfigTable:
+        """Set / clear the hummin provider's Z.ai API key.
+
+        Empty string clears + disables; a real key Fernet-encrypts + enables.
+        Operates on the single pre-seeded hummin row - no provider creation
+        happens here. The key is the operator's Z.ai key for the GLM Coding
+        Plan, injected as ZAI_API_KEY at spawn (see
+        roboco.llm.providers.hummin).
+        """
+        provider = await self._get_seeded_provider(ModelProvider.HUMMIN)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(provider.id),
+            ProviderUpdate(
+                auth_token=api_key if api_key else None,
+                clear_auth_token=not api_key,
+                enabled=bool(api_key),
+            ),
+        )
+        # Re-fetch for the caller.
+        return await self._get_seeded_provider(ModelProvider.HUMMIN)
 
     async def resolve_provider_for_model(
         self, model_name: str
@@ -785,6 +1033,21 @@ class ModelRoutingService(BaseService):
             provider, set the GLOBAL default to a Kimi model (default
             kimi-code/k3). No key check — subscription-CLI auth
             (~/.kimi-code), same shape as Codex/Gemini.
+          - "hummin":      wipe role/global assignments, force-enable the
+            HUMMIN provider, set the GLOBAL default to a GLM model (default
+            settings.hummin_cli_model), then seed the oversight/delivery
+            role tiers (_HUMMIN_ROLE_TIERS: board/reviewer/main-PM roles on
+            the high-thinking flash variant, delivery roles on the
+            low-thinking flash variant). No key check at mode-apply time
+            (the openrouter precedent — the spawn-time key check is the
+            gate: a missing ZAI_API_KEY exits the container 78 and parks
+            the provider), same shape as kimi.
+          - "nebius":      wipe role/global assignments, force-enable the
+            NEBIUS provider, set the GLOBAL default to a Nebius Token
+            Factory model (default settings.nebius_cli_model, an NVIDIA
+            Nemotron 3 id). No key check at mode-apply time (mirrors
+            openrouter - the spawn-time key check is the gate), same
+            provider_type_override shape.
           - "mix":         apply per-agent map verbatim. Any agent not in the
             map falls through to the GLOBAL default — which is whatever it
             was (preserves prior state). Self-hosted model names (not in the
@@ -807,6 +1070,9 @@ class ModelRoutingService(BaseService):
             "gemini": lambda: self._apply_gemini(default_model),
             "kimi": lambda: self._apply_kimi(default_model),
             "openrouter": lambda: self._apply_openrouter(default_model),
+            "nebius": lambda: self._apply_nebius(default_model),
+            "zai": lambda: self._apply_zai(default_model),
+            "hummin": lambda: self._apply_hummin(default_model),
             "ollama": lambda: self._apply_ollama(default_model),
             "self_hosted": lambda: self._apply_self_hosted(default_model),
             "mix": lambda: self._apply_mix(per_agent),
@@ -817,7 +1083,8 @@ class ModelRoutingService(BaseService):
             raise ValueError(
                 f"Unknown mode '{mode}'."
                 " Use 'anthropic', 'grok', 'codex', 'gemini', 'kimi', 'openrouter',"
-                " 'ollama', 'self_hosted', 'mix', or 'cost_tiered'."
+                " 'nebius', 'zai', 'hummin', 'ollama', 'self_hosted', 'mix', or"
+                " 'cost_tiered'."
             )
         await handler()
 
@@ -987,7 +1254,7 @@ class ModelRoutingService(BaseService):
         """
         await self._wipe_mode_switch_assignments()
         # Force-enable the OPENROUTER provider row (belt-and-suspenders
-        # against a row disabled by a key clear — the mode button should
+        # against a row disabled by a key clear - the mode button should
         # route to OpenRouter regardless, and the key check is the
         # operator's responsibility at set-time).
         openrouter = await self._get_seeded_provider(ModelProvider.OPENROUTER)
@@ -1004,6 +1271,128 @@ class ModelRoutingService(BaseService):
             provider_type_override=ModelProvider.OPENROUTER,
         )
         self.log.info("Mode applied: openrouter", default_model=model_name)
+
+    async def _apply_nebius(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to a Nebius Token Factory
+        model.
+
+        The ``_apply_openrouter`` twin: the operator may search the live
+        catalog (GET /providers/nebius/models) and the four Nemotron ids are
+        also static-catalog members (levels-parity batch), but a picked id
+        is upserted with ``provider_type_override=ModelProvider.NEBIUS``
+        regardless so it stores directly against the Nebius provider row.
+
+        Cost-tier limitation: identical to OpenRouter's - no ``_PRICING``
+        rows (cost is attributed from the metered ``usage.cost`` at the
+        provider layer), so ``input_price_per_million`` returns ``0.0`` for
+        any Nebius model name and the cost-tiered complexity-override
+        downgrade-only comparator treats them as the cheapest tier. Known
+        ceiling, documented here; acceptable because the operator is making
+        a deliberate choice.
+
+        AGENT_SLUG pins and complexity overrides are preserved (see
+        ``_wipe_mode_switch_assignments``).
+        """
+        await self._wipe_mode_switch_assignments()
+        # Force-enable the NEBIUS provider row (belt-and-suspenders
+        # against a row disabled by a key clear - the mode button should
+        # route to Nebius regardless, and the key check is the
+        # operator's responsibility at set-time).
+        nebius = await self._get_seeded_provider(ModelProvider.NEBIUS)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(nebius.id),
+            ProviderUpdate(enabled=True),
+        )
+        model_name = default_model or settings.nebius_cli_model
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+            provider_type_override=ModelProvider.NEBIUS,
+        )
+        self.log.info("Mode applied: nebius", default_model=model_name)
+
+    async def _apply_zai(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to a Z.ai GLM model.
+
+        ZAI models ARE in the static ``MODEL_CATALOG`` (glm-5.3,
+        glm-5.3-flash), so the upsert needs no ``provider_type_override``
+        - the catalog resolves straight to the ZAI provider row. Unlike
+        the subscription-CLI modes, the ZAI row authenticates with a
+        stored key, so this REFUSES to apply when the operator has not
+        saved one (a force-enable here would route every spawn to a dead
+        endpoint; the OLLAMA_CLOUD row has the same gate).
+
+        ZAI models have no rows in the ``_PRICING`` table (Z.ai bills via
+        subscription + API credits, not a static per-token table), so
+        ``input_price_per_million`` returns ``0.0`` for any ZAI model: the
+        cost-tiered comparator treats them as the cheapest tier, same
+        known ceiling as OpenRouter: an operator pinning a costlier GLM
+        model is making a deliberate choice.
+
+        AGENT_SLUG pins and complexity overrides are preserved (see
+        ``_wipe_mode_switch_assignments``).
+        """
+        zai = await self._get_seeded_provider(ModelProvider.ZAI)
+        if not zai.auth_token_encrypted:
+            raise ValueError("Save the Z.ai API key first (PUT /providers/zai-key).")
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(zai.id),
+            ProviderUpdate(enabled=True),
+        )
+        model_name = default_model or "glm-5.3-flash"
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+        )
+        self.log.info("Mode applied: zai", default_model=model_name)
+
+    async def _apply_hummin(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to a GLM (hummin) model.
+
+        The ``_apply_kimi`` twin, key-gated at SPAWN time instead (the
+        openrouter precedent): hummin models ARE in the static
+        ``MODEL_CATALOG`` (glm-5.3, glm-5.3-flash, glm-5.3-highspeed —
+        re-pointed from ZAI 2026-09-17), so the upsert needs no
+        ``provider_type_override``. The mode force-enables the row and
+        routes even without a saved key; a missing ZAI_API_KEY then fails
+        the container at hummin's own auth preflight (exit 78) and the
+        orchestrator parks the provider with the key-endpoint remediation,
+        instead of the mode button refusing outright.
+
+        AGENT_SLUG pins and complexity overrides are preserved (see
+        ``_wipe_mode_switch_assignments``).
+        """
+        await self._wipe_mode_switch_assignments()
+        hummin = await self._get_seeded_provider(ModelProvider.HUMMIN)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(hummin.id),
+            ProviderUpdate(enabled=True),
+        )
+        model_name = default_model or settings.hummin_cli_model
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+        )
+        # Seed the role tiers AFTER the wipe (which already deleted plain ROLE
+        # rows): the oversight/delivery split is part of the mode, not
+        # per-operator state. Idempotent on re-apply.
+        for role, tier_model in _HUMMIN_ROLE_TIERS:
+            await self.upsert_assignment(
+                scope=AssignmentScope.ROLE,
+                scope_value=role,
+                model_name=tier_model,
+            )
+        self.log.info(
+            "Mode applied: hummin",
+            default_model=model_name,
+            role_tiers=len(_HUMMIN_ROLE_TIERS),
+        )
 
     async def _apply_ollama(self, default_model: str | None) -> None:
         """Wipe role/global assignments, set GLOBAL to an Ollama Cloud model.

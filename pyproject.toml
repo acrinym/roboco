@@ -151,6 +151,10 @@ select = [
 # enum constraints. Bundling into a dataclass would hide enum hints from
 # the LLM and bring back invented values like nature='standard'.
 "roboco/mcp/**/*.py" = ["PLC0415", "PLR0913"]
+# hummin_live_config embeds the pi-extension TypeScript source as a raw
+# string asset: the TS lines cannot be reflowed without changing the
+# generated extension, so E501 is ignored for exactly that file.
+"roboco/llm/providers/hummin_live_config.py" = ["E501"]
 "roboco/services/*.py" = ["PLC0415"]
 # B010: the behavioral usage-rule redis-fail-open patch (see the module
 # docstring block) must use setattr, not a direct method assignment - mypy's
@@ -364,6 +368,13 @@ select = [
 # base_url, auth_token, mcp_config_path) — the model kwarg is how the
 # opencode model-ref prefixing tests hand over bare vs custom catalog ids.
 "tests/unit/llm/providers/test_openrouter_provider.py" = ["PLR0913"]
+# Nebius tests: line-for-line clones of the OpenRouter suites above, so the
+# same rule relaxations apply for the same reasons (usage 4-bucket event
+# shape, deferred tempfile imports in the config-render tests, the
+# spawn-config contract kwarg count).
+"tests/unit/llm/providers/test_nebius_cli_usage.py" = ["PLR0913", "PLR2004"]
+"tests/unit/llm/providers/test_nebius_cli_config.py" = ["PLC0415"]
+"tests/unit/llm/providers/test_nebius_provider.py" = ["PLR0913"]
 
 # =============================================================================
 # MyPy Configuration

@@ -234,6 +234,36 @@ class ModelProvider(StrEnum):
     list on demand via GET /providers/openrouter/models — never preloaded.
     Cost is attributed from OpenRouter's own metered usage.cost, not a static
     pricing table.
+    `NEBIUS` is Nebius Token Factory (https://tokenfactory.nebius.com) -
+    Nebius's OpenAI-compatible inference API serving 60+ open models
+    (NVIDIA Nemotron, DeepSeek, Qwen, Llama) behind one metered API key.
+    Same Ollama shape as OPENROUTER: a stored Fernet-encrypted API key
+    injected as NEBIUS_API_KEY/NEBIUS_BASE_URL at spawn, agents run through
+    the opencode CLI on the roboco-agent-nebius image (one-shot delivery
+    roles only - no interactive intake/secretary support). The default model
+    is an NVIDIA Nemotron 3 id, and cost is attributed from the metered
+    usage.cost field, not a static pricing table.
+
+    `ZAI` is Z.ai (https://z.ai) - the GLM family (GLM 5.3, GLM 5.3 Flash)
+    billed by a Z.ai subscription or API credits. Z.ai exposes an
+    Anthropic-compatible endpoint (https://api.z.ai/api/anthropic) that
+    speaks the Anthropic Messages API, so ZAI agents run through the
+    built-in Claude Code spawn with `ANTHROPIC_BASE_URL` /
+    `ANTHROPIC_AUTH_TOKEN` injected from the provider row at spawn (the
+    OLLAMA_CLOUD shape, not a dedicated provider class). The key is set via
+    PUT /providers/zai-key.
+
+    `HUMMIN` is the GLM-native `hummin` CLI (a pi-harness fork) running
+    headless in Docker — the go-to for the GLM family. Auth is key-based
+    (OpenRouter shape): the operator's Z.ai key for the GLM Coding Plan is
+    stored Fernet-encrypted via PUT /providers/hummin-key and injected as
+    `ZAI_API_KEY` at spawn — no credential mount. Routes through a dedicated
+    provider (roboco.llm.providers.hummin.HumminCliProvider) speaking
+    hummin's native `--mode json` protocol, never ANTHROPIC_BASE_URL
+    injection. GLM catalog entries (glm-5.3, glm-5.3-flash,
+    glm-5.3-highspeed) route here; the ZAI Anthropic-protocol path stays
+    enabled as a manual fallback. One-shot delivery roles only — no
+    interactive intake/secretary support.
     """
 
     ANTHROPIC = "anthropic"
@@ -244,6 +274,9 @@ class ModelProvider(StrEnum):
     GEMINI = "gemini"
     KIMI = "kimi"
     OPENROUTER = "openrouter"
+    NEBIUS = "nebius"
+    ZAI = "zai"
+    HUMMIN = "hummin"
 
 
 class AssignmentScope(StrEnum):
