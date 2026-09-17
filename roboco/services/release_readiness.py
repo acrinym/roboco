@@ -47,6 +47,13 @@ _DOWN_REVISION_RE = re.compile(r"^down_revision\s*[:=].*$", re.MULTILINE)
 _QUOTED_RE = re.compile(r"""["']([^"']+)["']""")
 _DECLARED_AGENTS_RE = re.compile(r"(\d+)\s+AI\s+agents", re.IGNORECASE)
 
+# Seats that share another seat's head. CEO headcount ruling (2026-09-17):
+# cell-pr-reviewer-2 is an extra hand backing the three cell PR reviewers,
+# not a 26th seat - the org is 25 seats + 1 human CEO. The docs-drift check
+# compares roboco/__init__.py's declared seat count with the registry, so the
+# shared hand must stay out of the count.
+_SHARED_SEAT_SLUGS = frozenset({"cell-pr-reviewer-2"})
+
 # Conventional-commit type -> normalized kind. Non-release-shaping types
 # (test/build/ci/style) collapse to "chore" so they count only as a patch.
 _CONVENTIONAL_TYPES: dict[str, str] = {
@@ -624,7 +631,10 @@ def _actual_agent_count() -> int | None:
         from roboco.foundation.identity import AGENTS
 
         return sum(
-            1 for row in AGENTS.values() if row.role.value not in {"system", "ceo"}
+            1
+            for slug, row in AGENTS.items()
+            if slug not in _SHARED_SEAT_SLUGS
+            and row.role.value not in {"system", "ceo"}
         )
     except Exception:
         # Best-effort drift signal; a failure here must never block a release.

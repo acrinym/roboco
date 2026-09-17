@@ -1,6 +1,6 @@
 # RoboCo: Nebius x NVIDIA Hackathon Submission Notes
 
-RoboCo is an AI agentic company: a virtual organization of 26 AI agents plus 1 human CEO that operates as a complete software development workforce, with a formal org chart (Board, Main PM, four delivery cells), a task lifecycle with PR gates and QA review, and a Next.js control panel for the CEO. The project predates this hackathon's submission window (its first releases shipped in July 2026: v0.26.0 on 2026-07-20, and v0.29.0 on 2026-08-21), so this document isolates exactly what was significantly updated during the submission period (August 26 to October 30, 2026) for the Stage One review.
+RoboCo is an AI agentic company: a virtual organization of 25 AI agents plus 1 human CEO that operates as a complete software development workforce, with a formal org chart (Board, Main PM, four delivery cells), a task lifecycle with PR gates and QA review, and a Next.js control panel for the CEO. The project predates this hackathon's submission window (its first releases shipped in July 2026: v0.26.0 on 2026-07-20, and v0.29.0 on 2026-08-21), so this document isolates exactly what was significantly updated during the submission period (August 26 to October 30, 2026) for the Stage One review.
 
 ## TL;DR
 
