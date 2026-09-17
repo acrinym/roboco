@@ -16,7 +16,7 @@ LABEL description="kimi interactive live chat (intake + secretary, generic drive
 # The in-container receiver the orchestrator delivers turns to.
 EXPOSE 9000
 
-COPY docker/scripts/entrypoints/kimi-live-entrypoint.sh /app/scripts/entrypoints/kimi-live-entrypoint.sh
+COPY --chmod=755 docker/scripts/entrypoints/kimi-live-entrypoint.sh /app/scripts/entrypoints/kimi-live-entrypoint.sh
 
 # Override the one-shot entrypoint: render config, then the generic driver.
 ENTRYPOINT ["/app/scripts/entrypoints/kimi-live-entrypoint.sh"]
