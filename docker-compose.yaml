@@ -861,48 +861,40 @@ services:
     restart: "no"
 
   # ==========================================================================
-  # Orchestrator - API Server + Agent Spawner
+  # App tier - BLUE and GREEN generations (blue-green design:
+  # docs/internal/nas-blue-green-deploy.md). ONE compose file, ONE project:
+  # blue services carry NO profile (plain `up` = core + blue + nginx, the
+  # steady state); green services carry profiles: [green] and are started
+  # only by scripts/deploy-nas.sh --color green during a flip. The ACTIVE
+  # color is expressed solely in front/active-upstreams.conf (see nginx
+  # below). Per-color image tags are the rollback guarantee: a green build
+  # must never overwrite the image blue stands on. Agent image builders keep
+  # SHARED tags (forward-compatible runtime clay, no per-color rollback).
   # ==========================================================================
-  orchestrator:
+  orchestrator-blue:
     build:
       context: .
       dockerfile: docker/orchestrator.Dockerfile
-    image: roboco-orchestrator
-    container_name: roboco-orchestrator
+    image: roboco-orchestrator-blue
+    container_name: roboco-orchestrator-blue
     restart: unless-stopped
-    # SYS_PTRACE: py-spy attaches to the running process (PID 1) to dump a
-    # stack trace without a restart (`docker compose exec orchestrator
-    # py-spy dump --pid 1`).
     cap_add:
       - SYS_PTRACE
-    # Multi-homed: the agent mesh (default) for spawned agents / panel /
-    # ollama, the data network for postgres/redis, plus render to reach the
-    # isolated video-renderer sidecar.
     networks:
       - default
       - data
       - render
     ports:
-      # Loopback-only: the orchestrator API is an unauthenticated control plane
-      # in header-trust mode. nginx reaches it over the internal network, so it
-      # never needs a routable host publish; remote access goes via nginx + cloud
-      # auth. A 0.0.0.0 publish exposed spawn/stop and settings-write with no
-      # credential to anyone who could reach the host (GHSA-4f7g-w95g-5q2c).
+      # Loopback-only operator debug publish, color-offset (blue 8000,
+      # green 8001) so the overlap window never fights for a port. nginx
+      # reaches the orchestrator over roboco_default; GHSA-4f7g-w95g-5q2c
+      # keeps this loopback-only.
       - "127.0.0.1:8000:8000"
     environment:
       <<: *orchestrator-env
-      # api role: serves stateless FastAPI request/response routes; the
-      # fleet-wide background loops AND the secretary/intake live-chat
-      # spawns (nginx routes those to the dispatcher, see docker/nginx.conf)
-      # run on the dispatcher service instead;
-      # see roboco/runtime/orchestrator.py's AgentOrchestrator.start().
       ROBOCO_ROLE: api
     volumes: *orchestrator-volumes
     healthcheck:
-      # curl is purged from the runtime image after the docker-cli install
-      # step (see docker/orchestrator.Dockerfile); urllib is stdlib, no
-      # extra tooling needed. Generous start_period: OptimalService (RAG)
-      # init typically takes 30-90s (see api/app.py's lifespan).
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s
       timeout: 5s
@@ -919,32 +911,60 @@ services:
         condition: service_completed_successfully
       agent-base-image:
         condition: service_completed_successfully
-    # Default agents to spawn (override in .env or command line)
-    # command: ["--spawn", "main-pm", "be-dev-1", "be-qa"]
-
+  orchestrator-green:
+    build:
+      context: .
+      dockerfile: docker/orchestrator.Dockerfile
+    image: roboco-orchestrator-green
+    container_name: roboco-orchestrator-green
+    restart: unless-stopped
+    cap_add:
+      - SYS_PTRACE
+    networks:
+      - default
+      - data
+      - render
+    ports:
+      # Loopback-only operator debug publish, color-offset (blue 8000,
+      # green 8001) so the overlap window never fights for a port. nginx
+      # reaches the orchestrator over roboco_default; GHSA-4f7g-w95g-5q2c
+      # keeps this loopback-only.
+      - "127.0.0.1:8001:8000"
+    environment:
+      <<: *orchestrator-env
+      ROBOCO_ROLE: api
+    volumes: *orchestrator-volumes
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+      agent-base-image:
+        condition: service_completed_successfully
   # ==========================================================================
   # Dispatcher - runs every Orchestrator background loop (dispatch, reaper,
   # rate-limit probe, self-heal, CI-watch, dep-update, release manager, board
   # programs, vault, telegram, ...) plus the once-per-fleet startup
-  # reconciliation. Split from the orchestrator (ROBOCO_ROLE=api) so the two
-  # don't share one GIL-pinned process (measured 113% CPU / 120s gateway
-  # timeouts on a single-process fleet, 2026-09-05). Its own task/notification
-  # queries go over HTTP to its OWN uvicorn: internal_api_url resolves to
-  # loopback for the dispatcher role by construction (roboco/config.py), not
-  # via ROBOCO_API_URL, rather than in-process; it needs the SAME docker
-  # socket + host volumes as the orchestrator to spawn/manage agent
-  # containers directly. NEVER set ROBOCO_API_URL to a loopback address here
-  # - this service spawns every agent container, and _generate_mcp_config
-  # hands ROBOCO_API_URL straight to each agent's MCP servers, so a loopback
-  # value here broke every gateway verb fleet-wide for hours (2026-09-06).
+  # reconciliation (2026-09-05 split: two roles must not share one
+  # GIL-pinned process). Its task/notification queries go over HTTP to its
+  # OWN uvicorn via internal_api_url (roboco/config.py); NEVER set
+  # ROBOCO_API_URL to a loopback address here - _generate_mcp_config hands
+  # ROBOCO_API_URL to every agent's MCP servers (2026-09-06 incident).
   # ==========================================================================
-  dispatcher:
-    image: roboco-orchestrator
-    # Built by the orchestrator service above, never on a registry: a
-    # pre-deploy `compose pull` (UGOS does one) must skip it or the whole
-    # deploy fails with \"pull access denied for roboco-orchestrator\".
+  dispatcher-blue:
+    image: roboco-orchestrator-blue
     pull_policy: never
-    container_name: roboco-dispatcher
+    container_name: roboco-dispatcher-blue
     restart: unless-stopped
     networks:
       - default
@@ -955,31 +975,50 @@ services:
       ROBOCO_ROLE: dispatcher
     volumes: *orchestrator-volumes
     healthcheck:
-      # curl is purged from the runtime image after the docker-cli install
-      # step (see docker/orchestrator.Dockerfile); urllib is stdlib, no
-      # extra tooling needed. Generous start_period: OptimalService (RAG)
-      # init typically takes 30-90s (see api/app.py's lifespan).
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 90s
+    profiles: ["blue"]
     depends_on:
-      orchestrator:
+      orchestrator-blue:
+        condition: service_healthy
+
+  dispatcher-green:
+    image: roboco-orchestrator-green
+    pull_policy: never
+    container_name: roboco-dispatcher-green
+    restart: unless-stopped
+    networks:
+      - default
+      - data
+      - render
+    environment:
+      <<: *orchestrator-env
+      ROBOCO_ROLE: dispatcher
+    volumes: *orchestrator-volumes
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    profiles: ["green"]
+    depends_on:
+      orchestrator-green:
         condition: service_healthy
 
   # ==========================================================================
   # Indexer - runs ONLY the KB/embedding worker (consumes the RAG index
-  # request stream and the periodic RAG update). No docker socket: it never
-  # spawns agent containers, just needs DB + redis + ollama.
+  # request stream and the periodic RAG update). No docker socket. No
+  # healthcheck: the indexer role runs only the Redis-stream worker, never
+  # uvicorn, so there is no HTTP endpoint to probe.
   # ==========================================================================
-  indexer:
-    image: roboco-orchestrator
-    # Built by the orchestrator service above, never on a registry: a
-    # pre-deploy `compose pull` (UGOS does one) must skip it or the whole
-    # deploy fails with \"pull access denied for roboco-orchestrator\".
+  indexer-blue:
+    image: roboco-orchestrator-blue
     pull_policy: never
-    container_name: roboco-indexer
+    container_name: roboco-indexer-blue
     restart: unless-stopped
     networks:
       - default
@@ -999,38 +1038,78 @@ services:
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       ROBOCO_ENVIRONMENT: production
-    # No healthcheck: the indexer role runs only the Redis-stream worker
-    # (roboco/bootstrap.py's _run_indexer_role), never uvicorn, so there is
-    # no HTTP endpoint to probe. Process death is covered by
-    # restart:unless-stopped; scripts/bootstrap.sh waits on running state,
-    # not health.
+    profiles: ["blue"]
     depends_on:
-      orchestrator:
+      orchestrator-blue:
+        condition: service_healthy
+
+  indexer-green:
+    image: roboco-orchestrator-green
+    pull_policy: never
+    container_name: roboco-indexer-green
+    restart: unless-stopped
+    networks:
+      - default
+      - data
+    environment:
+      ROBOCO_ROLE: indexer
+      ROBOCO_DATABASE_HOST: roboco-postgres
+      ROBOCO_DATABASE_PORT: 5432
+      ROBOCO_DATABASE_USER: roboco
+      ROBOCO_DATABASE_PASSWORD: roboco
+      ROBOCO_DATABASE_NAME: roboco
+      ROBOCO_REDIS_HOST: roboco-redis
+      ROBOCO_REDIS_PORT: 6379
+      ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
+      ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
+      ROBOCO_LOCAL_LLM_MODEL: glm-5.3:cloud
+      ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
+      ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
+      ROBOCO_ENVIRONMENT: production
+    profiles: ["green"]
+    depends_on:
+      orchestrator-green:
         condition: service_healthy
 
   # ==========================================================================
-  # Next.js Control Panel (Frontend)
+  # Next.js Control Panel (Frontend) - not exposed directly; nginx is the
+  # single entry point (port 3000).
   # ==========================================================================
-  # Not exposed directly - nginx is the single entry point (port 3000).
-  # API/WS traffic is proxied to the orchestrator, everything else to panel.
-  panel:
+  panel-blue:
     build:
       context: .
       dockerfile: docker/panel.Dockerfile
-    image: roboco-panel
-    container_name: roboco-panel
+    image: roboco-panel-blue
+    container_name: roboco-panel-blue
     restart: unless-stopped
     expose:
       - "3000"
+    profiles: ["blue"]
     depends_on:
-      - orchestrator
+      - orchestrator-blue
+
+  panel-green:
+    build:
+      context: .
+      dockerfile: docker/panel.Dockerfile
+    image: roboco-panel-green
+    container_name: roboco-panel-green
+    restart: unless-stopped
+    expose:
+      - "3000"
+    profiles: ["green"]
+    depends_on:
+      - orchestrator-green
 
   # ==========================================================================
-  # Nginx - Reverse proxy fronting panel + orchestrator
+  # Nginx - Reverse proxy fronting panel + orchestrator. THE SWITCH: the
+  # active color lives only in front/active-upstreams.conf (host-written by
+  # scripts/deploy-nas.sh, mounted read-only, applied with nginx -s reload -
+  # no container recreation, no dropped requests). Created by scripts/
+  # deploy-nas.sh BEFORE this service's first start (a missing host file
+  # would mount as a directory). On a cold host reboot the restart loop
+  # converges once the app containers exist.
   # ==========================================================================
-  # Single entry point on port 3000 so the browser hits one origin and we
-  # don't need CORS. /api/* and /ws/* go to the orchestrator, everything
-  # else goes to the Next.js panel.
   nginx:
     image: nginx:alpine
     container_name: roboco-nginx
@@ -1046,14 +1125,13 @@ services:
       ROBOCO_PANEL_AGENT_TOKEN: ${ROBOCO_PANEL_AGENT_TOKEN:-}
       NGINX_ENVSUBST_FILTER: "^ROBOCO_"
     volumes:
-      - ./docker/nginx.conf:/etc/nginx/templates/default.conf.template:ro
-    depends_on:
-      - panel
-      - orchestrator
-      # nginx resolves every upstream at startup; without this it boots
-      # before the dispatcher container exists and crash-loops on
-      # "host not found in upstream roboco-dispatcher:8000".
-      - dispatcher
+      - ./deploy/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      - ./front/active-upstreams.conf:/etc/nginx/active-upstreams.conf:ro
+    # NO depends_on: the blue/green services are profile-gated, and nginx
+    # must run for BOTH colors. Startup ordering is the deploy script's job
+    # (it writes the include and starts front last); on a cold host reboot
+    # nginx's restart loop converges once the app containers exist.
+
 
 networks:
   default:

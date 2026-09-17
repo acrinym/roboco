@@ -589,7 +589,7 @@ services:
       <<: *orchestrator-env
       # api role: serves stateless FastAPI request/response routes; the
       # fleet-wide background loops AND the secretary/intake live-chat
-      # spawns (nginx routes those to the dispatcher, see docker/nginx.conf)
+      # spawns (nginx routes those to the dispatcher, see deploy/nginx.conf)
       # run on the dispatcher service instead;
       # see roboco/runtime/orchestrator.py's AgentOrchestrator.start().
       ROBOCO_ROLE: api
@@ -721,7 +721,7 @@ services:
       ROBOCO_PANEL_AGENT_TOKEN: ${ROBOCO_PANEL_AGENT_TOKEN:?ROBOCO_PANEL_AGENT_TOKEN is required (mint a CEO token from ROBOCO_AGENT_AUTH_SECRET) unless ROBOCO_CLOUD_AUTH_ENABLED=true}
       NGINX_ENVSUBST_FILTER: "^ROBOCO_"
     volumes:
-      - ./docker/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/nginx.conf:/etc/nginx/templates/default.conf.template:ro
     depends_on:
       - panel
       - orchestrator

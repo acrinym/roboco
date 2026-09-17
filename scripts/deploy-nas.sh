@@ -1,51 +1,159 @@
 #!/usr/bin/env bash
-# RoboCo NAS deploy - Option 0: pre-build and pre-pull while the old stack
-# keeps serving, then swap only what changed.
+# RoboCo NAS deploy - blue-green in ONE compose file (design:
+# docs/internal/nas-blue-green-deploy.md).
 #
 # Run ON the NAS, as root:
-#   sudo bash /volume1/roboco/scripts/deploy-nas.sh
+#   sudo bash /volume1/roboco/scripts/deploy-nas.sh --color green
+#   sudo bash /volume1/roboco/scripts/deploy-nas.sh --color blue --skip-build
 #
-# Why this shape: the 20+ minute deploy was mostly image BUILDS (the
-# orchestrator and agent images build from source) plus sequential bring-up.
-# Builds and pulls touch images, never containers, so doing them first -
-# while the old stack is still running - takes all the wait time off the
-# critical path. `up -d --wait` then recreates only services whose image or
-# config actually changed: postgres, redis, minio, and ollama stay untouched
-# and serving throughout, and the script returns only once the new
-# generation passes its healthchecks. Downtime collapses to the restart of
-# the changed app-tier services (typically a few minutes).
+# ONE compose file (docker-compose.yaml), ONE project (roboco). Blue services
+# carry no profile (plain `up` = core + blue + nginx, the steady state);
+# green services carry profiles: [green]. The ACTIVE color lives only in
+# front/active-upstreams.conf, applied to the running nginx with
+# `nginx -s reload`. The stopped color = the rollback (re-run with its
+# color). Never `down -v`: the minio named volume is the only thing a
+# volumes prune would delete.
 #
-# Escalating to blue-green later (shared postgres, two app-tier compose
-# projects, nginx upstream flip) builds on this exact script: blue is
-# "run this script", green is the same with a second project name.
+# Two NAS-compose landmines baked into this script:
+# 1. `up --wait` aborts when a one-shot container completes, even exit 0
+#    (minio-init killed a run mid-deploy while everything was healthy) ->
+#    `up -d` + poll docker health per container instead.
+# 2. If nginx ever started before front/active-upstreams.conf existed,
+#    docker bind-mounts a DIRECTORY at that path; the script detects and
+#    removes the squatter, writes the real file, and force-recreates nginx
+#    (a running container stays pinned to the old directory inode - a host
+#    file write alone never reaches it).
 
 set -euo pipefail
 
-STACK_DIR=${STACK_DIR:-/volume1/roboco}
-COMPOSE_FILE=${COMPOSE_FILE:-$STACK_DIR/docker-compose.yaml}
-# 0 = wait indefinitely (very old compose without --wait-timeout support).
-WAIT_TIMEOUT=${WAIT_TIMEOUT:-900}
+cd "${STACK_DIR:-/volume1/roboco}"
 
-cd "$STACK_DIR"
+COLOR=blue
+SKIP_BUILD=0
+POLL_TIMEOUT=${POLL_TIMEOUT:-900}
+INCLUDE=front/active-upstreams.conf
 
-echo "[deploy] building changed images (old stack keeps serving)..."
-docker compose -f "$COMPOSE_FILE" build
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --color) COLOR="$2"; shift 2 ;;
+    --color=*) COLOR="${1#--color=}"; shift ;;
+    --skip-build) SKIP_BUILD=1; shift ;;
+    *) echo "unknown argument: $1 (usage: deploy-nas.sh [--color blue|green] [--skip-build])" >&2; exit 2 ;;
+  esac
+done
 
-echo "[deploy] pulling registry images (old stack keeps serving)..."
-docker compose -f "$COMPOSE_FILE" pull --ignore-buildable 2>/dev/null ||
-  docker compose -f "$COMPOSE_FILE" pull || true
+case "$COLOR" in
+  blue|green) ;;
+  *) echo "--color must be blue or green (got: $COLOR)" >&2; exit 2 ;;
+esac
 
-echo "[deploy] recreating changed services and waiting for health..."
-WAIT_ARGS=(--wait)
-if [ "$WAIT_TIMEOUT" -gt 0 ]; then
-  WAIT_ARGS+=(--wait-timeout "$WAIT_TIMEOUT")
+OTHER=blue
+[ "$COLOR" = "blue" ] && OTHER=green
+
+wait_healthy() { # wait_healthy <container> [exit0]
+  local c="$1" must_exit="${2:-}" deadline=$((SECONDS + POLL_TIMEOUT)) st
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    st=$(docker inspect -f '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$c" 2>/dev/null || echo missing)
+    case "$st" in
+      running/healthy) echo "[deploy] $c healthy"; return 0 ;;
+      exited/none)
+        if [ "$must_exit" = "exit0" ] &&
+           [ "$(docker inspect -f '{{.State.ExitCode}}' "$c")" = "0" ]; then
+          echo "[deploy] $c completed (exit 0)"; return 0
+        fi
+        ;;
+    esac
+    sleep 5
+  done
+  echo "[deploy] TIMEOUT waiting for $c (last state: $st)" >&2
+  docker logs "$c" --tail 30 2>&1 | tail -10 >&2 || true
+  return 1
+}
+
+COMPOSE=(docker compose -f docker-compose.yaml)
+
+echo "[deploy] app/$COLOR: building images..."
+if [ "$SKIP_BUILD" -eq 0 ]; then
+  "${COMPOSE[@]}" build "orchestrator-$COLOR" "panel-$COLOR"
 fi
-docker compose -f "$COMPOSE_FILE" up -d "${WAIT_ARGS[@]}"
 
-echo "[deploy] applying schema migrations (idempotent)..."
-docker compose -f "$COMPOSE_FILE" exec -T orchestrator alembic upgrade head ||
-  echo "[deploy] WARNING: alembic failed; check orchestrator logs"
+echo "[deploy] bringing up $COLOR ..."
+# Named-service up: starts ONLY this generation (+ its dependencies: core,
+# agent builders). Blue (no-profile) is in every model, so a plain
+# `--profile green up` would reconcile blue too - recreating it with new
+# code and destroying rollback honesty. nginx joins the blue list (first
+# deploy) and is ensured for green (it is the reload target).
+if [ "$COLOR" = "green" ]; then
+  "${COMPOSE[@]}" up -d --build orchestrator-green dispatcher-green indexer-green panel-green
+  "${COMPOSE[@]}" up -d nginx
+else
+  "${COMPOSE[@]}" up -d --build orchestrator-blue dispatcher-blue indexer-blue panel-blue nginx
+fi
+wait_healthy "roboco-orchestrator-$COLOR"
+wait_healthy roboco-postgres
+wait_healthy roboco-ollama
+wait_healthy roboco-ollama-init exit0
+
+echo "[deploy] schema migrations (idempotent)..."
+"${COMPOSE[@]}" exec -T "orchestrator-$COLOR" alembic upgrade head ||
+  echo "[deploy] WARNING: alembic failed; traffic NOT flipped, investigate before flipping"
+
+echo "[deploy] switching traffic to $COLOR..."
+mkdir -p front
+# A directory squatting on the include path (from an nginx start that
+# preceded the file) cannot be overwritten by `cat >` - remove it first.
+if [ -d "$INCLUDE" ]; then
+  echo "[deploy] removing directory squatting on $INCLUDE"
+  rm -rf "$INCLUDE"
+  INCLUDE_WAS_DIR=1
+else
+  INCLUDE_WAS_DIR=0
+fi
+cat > "$INCLUDE" <<EOF
+# ACTIVE BLUE-GREEN COLOR: $COLOR (generated by scripts/deploy-nas.sh).
+# Included from deploy/nginx.conf; applied below via nginx -s reload.
+
+upstream roboco_panel {
+    server roboco-panel-$COLOR:3000;
+}
+
+upstream roboco_orchestrator {
+    server roboco-orchestrator-$COLOR:8000;
+}
+
+upstream roboco_dispatcher {
+    server roboco-dispatcher-$COLOR:8000;
+}
+EOF
+
+if [ ! -f "$INCLUDE" ]; then
+  echo "[deploy] FATAL: $INCLUDE still not a regular file" >&2
+  exit 1
+fi
+
+# The include was a directory when nginx's mount was created: that running
+# container is pinned to the stale inode. Recreate it so the bind-mount
+# picks up the real file. Otherwise a hot reload applies the change with
+# zero dropped requests.
+if [ "$INCLUDE_WAS_DIR" -eq 1 ] &&
+   [ "$("${COMPOSE[@]}" ps -q nginx)" != "" ]; then
+  echo "[deploy] recreating nginx to drop the stale directory mount..."
+  "${COMPOSE[@]}" up -d --force-recreate nginx
+  wait_healthy roboco-nginx || wait_healthy roboco-nginx
+  sleep 2
+fi
+
+if ! "${COMPOSE[@]}" ps -q nginx | grep -q .; then
+  "${COMPOSE[@]}" up -d nginx
+fi
+"${COMPOSE[@]}" exec -T nginx nginx -t
+"${COMPOSE[@]}" exec -T nginx nginx -s reload
+
+if [ -n "$("${COMPOSE[@]}" ps -q "orchestrator-$OTHER")" ]; then
+  echo "[deploy] stopping $OTHER (kept for rollback: re-run with --color $OTHER)..."
+  "${COMPOSE[@]}" stop "orchestrator-$OTHER" "dispatcher-$OTHER" "indexer-$OTHER" "panel-$OTHER"
+fi
 
 echo "[deploy] current state:"
-docker compose -f "$COMPOSE_FILE" ps
-echo "[deploy] done."
+"${COMPOSE[@]}" ps
+echo "[deploy] done. Active color: $COLOR (traffic switched, $OTHER stopped for rollback)."
