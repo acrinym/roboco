@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version tag (e.g. 0.31.0). Empty on dispatch = the short SHA."
+        required: false
+        type: string
 
 jobs:
   publish-images:
@@ -46,12 +51,17 @@ jobs:
       - name: Derive version tag
         id: ver
         run: |
-          # release → the tag (v0.1.0 → 0.1.0). Any manual dispatch runs against a
-          # branch whose name can contain "/" (e.g. feature/x) — not a valid image
-          # tag — so use the short SHA, which always is one.
+          # release → the tag (v0.1.0 → 0.1.0). A manual dispatch carries an
+          # optional explicit version (the re-release path: the release event
+          # already fired, so a rebuild for the same tag must be dispatched by
+          # hand). Any other dispatch runs against a branch whose name can
+          # contain "/" (e.g. feature/x) — not a valid image tag — so use the
+          # short SHA, which always is one.
           if [ "${{ github.event_name }}" = "release" ]; then
             RAW="${{ github.event.release.tag_name }}"
             VERSION="${RAW#v}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
           else
             VERSION="$(git rev-parse --short HEAD)"
           fi
@@ -146,6 +156,15 @@ jobs:
           # openrouter/nebius). They build FROM the delivery provider images
           # above, so they build in a SECOND pass after that loop, never
           # inside it (array iteration order is undefined).
+          #
+          # Every live Dockerfile does a BARE `FROM roboco-agent-gemini` (and
+          # siblings). Pass 1 tagged those images only with fully-qualified
+          # registry refs, and BuildKit resolves an unqualified FROM against
+          # docker.io/library when no bare local tag exists, where these
+          # repos don't exist (pull denied, the v0.31.0 release failure). So
+          # put each delivery image's bare tag in the daemon first (the same
+          # reason roboco-agent-base and roboco-agent-grok carry bare tags
+          # above).
           declare -A LIVE_IMAGES=(
             [roboco-agent-hummin-live]=docker/agent-hummin-live.Dockerfile
             [roboco-agent-codex-live]=docker/agent-codex-live.Dockerfile
@@ -154,6 +173,9 @@ jobs:
             [roboco-agent-openrouter-live]=docker/agent-openrouter-live.Dockerfile
             [roboco-agent-nebius-live]=docker/agent-nebius-live.Dockerfile
           )
+          for name in "${!LIVE_IMAGES[@]}"; do
+            docker tag "${GHCR}/${name%-live}:${VERSION}" "${name%-live}"
+          done
           for name in "${!LIVE_IMAGES[@]}"; do
             echo "::group::build ${name}"
             docker build -f "${LIVE_IMAGES[$name]}" $(regtags "${name}") .
