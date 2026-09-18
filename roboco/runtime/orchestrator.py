@@ -721,6 +721,10 @@ class _IntakeRunSpec:
     provider_auth_token: str | None
     provider_type: str = "anthropic"
     model: str = ""
+    # The scoped project's UUID (single-project scope only, else ""). The
+    # live-chat draft bridge bakes it into the propose_draft description: the
+    # panel validates the_work[].project_id as a UUID the agent cannot guess.
+    project_uuid: str = ""
 
 
 @dataclass

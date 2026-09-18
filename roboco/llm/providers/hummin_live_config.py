@@ -85,13 +85,46 @@ _SECRETARY_TOOLS_TS = r"""
 """
 
 _INTAKE_TOOLS_TS = r"""
+  const draftSchema = Type.Object({
+    title: Type.String({ description: "Short imperative task title" }),
+    objective: Type.String({
+      description:
+        "What this task does and why, 20+ characters. The panel shows it as the summary and REFUSES to launch without it.",
+    }),
+    what_this_builds: Type.Array(Type.String(), {
+      description: "User-visible outcomes, one string each",
+    }),
+    the_work: Type.Array(
+      Type.Object({
+        team: Type.String({ description: "Delivery cell: backend | frontend | uxui" }),
+        summary: Type.String({ description: "What this cell builds" }),
+        items: Type.Array(Type.String(), { description: "Work items for this cell" }),
+        project_id: Type.String({ description: "This cell's repo/project id (per-cell repo). __SCOPED_PROJECT__" }),
+      }),
+      { description: "One entry per delivery cell; a multi-cell task has one entry per cell" },
+    ),
+    notes: Type.Optional(Type.Array(Type.String(), { description: "Context notes for the cells" })),
+    acceptance_criteria: Type.Array(Type.String(), {
+      description: "At least one checkable condition; the panel REFUSES to launch without one",
+    }),
+    team: Type.Optional(Type.String({ description: "Owning team, if single-cell" })),
+    scale: Type.Optional(Type.String({ description: "single | multi (multi = multi-cell)" })),
+    task_type: Type.Optional(Type.String()),
+    nature: Type.Optional(Type.String()),
+    estimated_complexity: Type.Optional(Type.String({ description: "low | medium | high" })),
+    priority: Type.Optional(Type.Number({ description: "1 highest, default 2" })),
+  });
+
   pi.registerTool({
     name: "propose_draft",
     label: "Propose task draft",
-    description: "Submit the drafted task to the CEO's live chat for review. Call ONCE when the spec is settled.",
-    parameters: Type.Object({
-      draft: Type.Object({}, { additionalProperties: true }),
-    }),
+    description:
+      "Submit the finished task draft for the human to review and confirm. Call ONCE when the spec is " +
+      "settled. The draft object's field names are EXACT snake_case: title, objective (20+ chars), " +
+      "what_this_builds[], the_work[] ({team, summary, items, project_id}, one entry per delivery cell), " +
+      "notes[], acceptance_criteria[] (at least one), team, scale, task_type, nature, estimated_complexity, " +
+      "priority. Do not invent other field names; unspecified keys are ignored by the panel.",
+    parameters: Type.Object({ draft: draftSchema }),
     async execute(_id, params) {
       return textResult(JSON.stringify(await relayEvent({ kind: "draft", text: "", tool: "propose_draft", data: params.draft })));
     },
@@ -100,10 +133,13 @@ _INTAKE_TOOLS_TS = r"""
   pi.registerTool({
     name: "propose_batch",
     label: "Propose MegaTask batch",
-    description: "Submit a MegaTask batch ({drafts: [...], title}) to the CEO's live chat for review.",
+    description:
+      "Submit a MegaTask (SEVERAL task drafts at once) to the CEO's live chat for review. Use this instead of " +
+      "propose_draft when the CEO asked for multiple tasks. Each draft uses the exact same snake_case fields " +
+      "as propose_draft's draft object.",
     parameters: Type.Object({
       title: Type.String({ description: "Batch title" }),
-      drafts: Type.Array(Type.Object({}, { additionalProperties: true })),
+      drafts: Type.Array(draftSchema, { description: "One draft per task, exact same fields as propose_draft" }),
     }),
     async execute(_id, params) {
       return textResult(JSON.stringify(await relayEvent({ kind: "batch", text: "", tool: "propose_batch", data: { drafts: params.drafts, title: params.title } })));
@@ -194,7 +230,27 @@ __TOOLS__
 def render_extension(role: str) -> str:
     """The extension TS for one role ('secretary' or 'intake')."""
     tools = _SECRETARY_TOOLS_TS if role == "secretary" else _INTAKE_TOOLS_TS
-    return _EXTENSION_TS.replace("__TOOLS__", tools)
+    # The panel validates the_work[].project_id as a project UUID, which the
+    # agent cannot discover from its workspace or prompt. For a single-project
+    # scope the orchestrator injects the scoped UUID at spawn; for product and
+    # MegaTask scopes the sanctioned path is to OMIT project_id per cell - the
+    # CEO binds each repo in the confirm picker.
+    scoped_uuid = os.environ.get("ROBOCO_INTAKE_PROJECT_ID", "")
+    if scoped_uuid:
+        scoped = (
+            f"This session's scoped project UUID is '{scoped_uuid}' - use exactly "
+            "that value as project_id for the scoped cell (slugs are rejected)."
+        )
+    else:
+        scoped = (
+            "No scoped project UUID was injected. Do NOT put a slug in project_id - "
+            "the panel accepts only project UUIDs here and rejects anything else. "
+            "Omit project_id: the draft stays target-less at proposal time and the "
+            "CEO binds the repo in the confirm picker."
+        )
+    return _EXTENSION_TS.replace("__TOOLS__", tools).replace(
+        "__SCOPED_PROJECT__", scoped
+    )
 
 
 def render_extension_file(role: str, agent_dir: Path | None = None) -> Path:
