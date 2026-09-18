@@ -743,12 +743,16 @@ def _wire_spawn_mocks(
     async def _noop(*_a: Any, **_k: Any) -> None:
         return None
 
+    async def _noop_uuid(_slug: Any) -> str:
+        return ""
+
     async def _run(cmd: list[str]) -> str:
         run_calls.append(cmd)
         return "containerid0123456789"
 
     monkeypatch.setattr(orch, "_clone_intake_scope", _clone)
     monkeypatch.setattr(orch, "_resolve_agent_route", _route)
+    monkeypatch.setattr(orch, "_scoped_project_uuid", _noop_uuid)
     monkeypatch.setattr(orch, "_ensure_agent_image", _noop)
     monkeypatch.setattr(orch, "_remove_container", _noop)
     monkeypatch.setattr(orch, "_run_container_cmd", _run)
@@ -789,6 +793,29 @@ class TestSpawnIntakeSession:
         assert instance.container_id == "containerid0123456789"
         # The cloned cwd reached the docker cmd.
         assert "ROBOCO_WORKSPACE=/data/workspaces/roboco/board/intake-1" in run_calls[0]
+
+    @pytest.mark.asyncio
+    async def test_spawn_injects_scoped_project_uuid_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The live draft bridge needs the scoped project's UUID: the panel
+        validates the_work[].project_id as a UUID the agent cannot guess, so
+        the spawn passes it through for the bridge to declare."""
+        orch = _make_minimal_orchestrator()
+        run_calls: list[list[str]] = []
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
+
+        async def _uuid(_slug: Any) -> str:
+            return "00000000-0000-0000-0003-000000000012"
+
+        monkeypatch.setattr(orch, "_scoped_project_uuid", _uuid)
+
+        await orch.spawn_intake_session("sess-uuid", project_slug="roboco")
+
+        assert (
+            "ROBOCO_INTAKE_PROJECT_ID=00000000-0000-0000-0003-000000000012"
+            in run_calls[0]
+        )
 
     @pytest.mark.asyncio
     async def test_spawn_adds_compose_labels_before_image(

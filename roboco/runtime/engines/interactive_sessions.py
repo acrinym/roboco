@@ -727,15 +727,7 @@ class InteractiveSessionsEngine(_Base):
             # The scoped project's UUID, for the live-chat draft bridge: the
             # panel validates the_work[].project_id as a UUID, which the agent
             # cannot discover from its workspace or prompt on its own.
-            project_uuid = ""
-            if project_slug:
-                from roboco.db.base import get_session_factory
-                from roboco.services.project import get_project_service
-
-                factory = get_session_factory()
-                async with factory() as db:
-                    scoped = await get_project_service(db).get_by_slug(project_slug)
-                    project_uuid = str(scoped.id) if scoped else ""
+            project_uuid = await self._scoped_project_uuid(project_slug)
 
             ambient = await self._resolve_intake_ambient(
                 project_slug, product_id=product_id, project_ids=project_ids
@@ -1113,6 +1105,24 @@ class InteractiveSessionsEngine(_Base):
         cmd.append(spec.image)
         return cmd
 
+    @staticmethod
+    async def _scoped_project_uuid(project_slug: str | None) -> str:
+        """The scoped project's UUID for the live draft bridge ("" unscoped).
+
+        The panel validates ``the_work[].project_id`` as a project UUID, which
+        the intake agent cannot discover from its workspace or prompt on its
+        own - the orchestrator hands it over so the draft bridge can inject it.
+        """
+        if not project_slug:
+            return ""
+        from roboco.db.base import get_session_factory
+        from roboco.services.project import get_project_service
+
+        factory = get_session_factory()
+        async with factory() as db:
+            scoped = await get_project_service(db).get_by_slug(project_slug)
+            return str(scoped.id) if scoped else ""
+
     async def _clone_intake_scope(
         self,
         project_slug: str | None,
@@ -1363,9 +1373,7 @@ class InteractiveSessionsEngine(_Base):
         # panel validates the_work[].project_id as a UUID the agent cannot
         # guess from its workspace or prompt.
         if spec.project_uuid:
-            cmd.extend(
-                ["-e", f"ROBOCO_INTAKE_PROJECT_ID={spec.project_uuid}"]
-            )
+            cmd.extend(["-e", f"ROBOCO_INTAKE_PROJECT_ID={spec.project_uuid}"])
         # GROK mounts the subscription auth + usage dir; other providers use the
         # ANTHROPIC_* injection or the mounted ~/.claude default.
         AgentOrchestrator._append_interactive_provider_env(cmd, spec)
